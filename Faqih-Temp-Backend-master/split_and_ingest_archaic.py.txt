@@ -1,0 +1,169 @@
+# archaic: # split_and_ingest.py
+# archaic: #!/usr/bin/env python3
+# archaic: """
+# archaic: split_and_ingest.py
+# archaic: 
+# archaic: 1. Splits hadith_corpus.md into chunks under THRESHOLD_TOKENS.
+# archaic: 2. Uploads each chunk for the assistant.
+# archaic: 3. Creates a vector store over all file_ids.
+# archaic: 4. Spawns the assistant with file_search access.
+# archaic: 5. Interactive CLI loop when run standalone.
+# archaic: """
+# archaic: 
+# archaic: import os
+# archaic: import re
+# archaic: import sys
+# archaic: import time
+# archaic: import signal
+# archaic: import shutil
+# archaic: import tempfile
+# archaic: from pathlib import Path
+# archaic: 
+# archaic: import openai
+# archaic: import tiktoken
+# archaic: from dotenv import load_dotenv
+# archaic: 
+# archaic: # ───────── CONFIG ─────────
+# archaic: load_dotenv()
+# archaic: openai.api_key = os.getenv("OPENAI_API_KEY")
+# archaic: 
+# archaic: INPUT_MD         = "hadith_corpus.md"
+# archaic: THRESHOLD_TOKENS = 200_000
+# archaic: MODEL_NAME       = "gpt-4o-mini"
+# archaic: ASSISTANT_NAME   = "Al-Faqih AI (RAG)"
+# archaic: 
+# archaic: INSTRUCTIONS = """
+# archaic: You are Al-Faqih AI, a Shia ḥadīth scholar with photographic memory.
+# archaic: 1. Always call the file_search tool first, using the user’s exact query.
+# archaic: 2. Quote the entire hadith text exactly as it appears in the corpus, including full chain, Arabic, English, and link.
+# archaic: 3. Do not add commentary, summaries, symbols, or paraphrasing.
+# archaic: 4. Use this template exactly:
+# archaic: 
+# archaic: ### Hadith {#}
+# archaic: - **Chain of Transmission:** …full Isnād here…
+# archaic: - **Arabic Text:** «…full Arabic here…»
+# archaic: - **English Translation:** “…full English here…”
+# archaic: - **Link:** [Link](https://thaqalayn.net/…)
+# archaic: 
+# archaic: Repeat verbatim for each relevant hadith. Never deviate.
+# archaic: """
+# archaic: 
+# archaic: # helper: token count
+# archaic: enc = tiktoken.get_encoding("cl100k_base")
+# archaic: def count_tokens(text: str) -> int:
+# archaic:     return len(enc.encode(text))
+# archaic: 
+# archaic: def split_corpus(input_path: Path, threshold: int):
+# archaic:     text  = input_path.read_text(encoding="utf-8")
+# archaic:     parts = re.split(r'(?m)^---\s*$', text)
+# archaic:     blocks = [p.strip() + "\n---\n" for p in parts if p.strip()]
+# archaic:     tmpdir = Path(tempfile.mkdtemp(prefix="hadith_split_"))
+# archaic:     files, acc, chunk, idx = [], 0, [], 1
+# archaic: 
+# archaic:     for block in blocks:
+# archaic:         btoks = count_tokens(block)
+# archaic:         if chunk and acc + btoks > threshold:
+# archaic:             path = tmpdir / f"part_{idx:03d}.md"
+# archaic:             path.write_text("".join(chunk), encoding="utf-8")
+# archaic:             files.append(path)
+# archaic:             chunk, acc, idx = [], 0, idx+1
+# archaic:         chunk.append(block)
+# archaic:         acc += btoks
+# archaic: 
+# archaic:     if chunk:
+# archaic:         path = tmpdir / f"part_{idx:03d}.md"
+# archaic:         path.write_text("".join(chunk), encoding="utf-8")
+# archaic:         files.append(path)
+# archaic: 
+# archaic:     return tmpdir, files
+# archaic: 
+# archaic: class RAGSession:
+# archaic:     def __init__(self, files):
+# archaic:         self.tmpdir   = tempfile.mkdtemp(prefix="rag_")
+# archaic:         self.files    = files
+# archaic:         self.file_ids = []
+# archaic:         self.vs_id    = None
+# archaic:         self.asst_id  = None
+# archaic: 
+# archaic:     def __enter__(self):
+# archaic:         self._upload_and_index()
+# archaic:         self._spawn_assistant()
+# archaic:         print("\nSession ready – type 'exit' to quit.\n")
+# archaic:         return self
+# archaic: 
+# archaic:     def __exit__(self, exc_t, exc, tb):
+# archaic:         self._cleanup()
+# archaic:         return False
+# archaic: 
+# archaic:     def _upload_and_index(self):
+# archaic:         print("Uploading splits…")
+# archaic:         for f in self.files:
+# archaic:             print(" •", f.name)
+# archaic:             fid = openai.files.create(file=open(f, "rb"), purpose="assistants").id
+# archaic:             self.file_ids.append(fid)
+# archaic:         print("Creating vector store…")
+# archaic:         vs = openai.vector_stores.create(name="HadithStore", file_ids=self.file_ids)
+# archaic:         self.vs_id = vs.id
+# archaic: 
+# archaic:     def _spawn_assistant(self):
+# archaic:         print("Spawning assistant…")
+# archaic:         asst = openai.beta.assistants.create(
+# archaic:             name=ASSISTANT_NAME,
+# archaic:             model=MODEL_NAME,
+# archaic:             instructions=INSTRUCTIONS,
+# archaic:             tools=[{"type":"file_search"}],
+# archaic:             tool_resources={"file_search": {"vector_store_ids": [self.vs_id]}}
+# archaic:         )
+# archaic:         self.asst_id = asst.id
+# archaic: 
+# archaic:         # prime thread
+# archaic:         self.thread_id = openai.beta.threads.create().id
+# archaic:         openai.beta.threads.messages.create(
+# archaic:             thread_id=self.thread_id,
+# archaic:             role="user",
+# archaic:             content="Load the corpus, please.",
+# archaic:             attachments=[{"file_id": self.file_ids[0], "tools":[{"type":"file_search"}]}]
+# archaic:         )
+# archaic: 
+# archaic:     def chat(self):
+# archaic:         while True:
+# archaic:             q = input("You: ").strip()
+# archaic:             if q.lower() in {"exit","quit"}:
+# archaic:                 break
+# archaic:             openai.beta.threads.messages.create(
+# archaic:                 thread_id=self.thread_id,
+# archaic:                 role="user",
+# archaic:                 content=q,
+# archaic:                 attachments=[{"file_id": self.file_ids[0], "tools":[{"type":"file_search"}]}]
+# archaic:             )
+# archaic:             run = openai.beta.threads.runs.create(thread_id=self.thread_id, assistant_id=self.asst_id)
+# archaic:             while openai.beta.threads.runs.retrieve(thread_id=self.thread_id, run_id=run.id).status != "completed":
+# archaic:                 time.sleep(0.5)
+# archaic:             msgs = openai.beta.threads.messages.list(thread_id=self.thread_id).data
+# archaic:             reply = next(m for m in msgs if m.role=="assistant").content[0].text.value
+# archaic:             print(f"Assistant: {reply}\n")
+# archaic: 
+# archaic:     def _cleanup(self):
+# archaic:         try: openai.beta.assistants.delete(self.asst_id)
+# archaic:         except: pass
+# archaic:         try: openai.vector_stores.delete(self.vs_id)
+# archaic:         except: pass
+# archaic:         shutil.rmtree(self.tmpdir, ignore_errors=True)
+# archaic: 
+# archaic: def main():
+# archaic:     import signal
+# archaic:     signal.signal(signal.SIGINT, lambda *a: (_ for _ in ()).throw(KeyboardInterrupt))
+# archaic:     inp = Path(INPUT_MD)
+# archaic:     if not inp.exists():
+# archaic:         print("Error: input file not found", INPUT_MD, file=sys.stderr)
+# archaic:         sys.exit(1)
+# archaic:     print("Splitting corpus…")
+# archaic:     split_dir, parts = split_corpus(inp, THRESHOLD_TOKENS)
+# archaic:     print(f" → {len(parts)} parts in {split_dir}\n")
+# archaic:     with RAGSession(parts) as sess:
+# archaic:         sess.chat()
+# archaic:     shutil.rmtree(split_dir, ignore_errors=True)
+# archaic: 
+# archaic: if __name__ == "__main__":
+# archaic:     main()
+# archaic: 

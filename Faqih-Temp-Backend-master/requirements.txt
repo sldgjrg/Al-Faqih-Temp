@@ -1,0 +1,8 @@
+flask
+flask-cors
+gunicorn
+gevent
+# archaic: python-dotenv
+# archaic: tiktoken
+# archaic: faiss-cpu
+# archaic: openai

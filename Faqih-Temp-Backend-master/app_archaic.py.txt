@@ -1,0 +1,184 @@
+# archaic: #!/usr/bin/env python3
+# archaic: 
+# archaic: import os
+# archaic: import sys
+# archaic: import time
+# archaic: from pathlib import Path
+# archaic: 
+# archaic: from flask import Flask, request, jsonify
+# archaic: from flask_cors import CORS
+# archaic: from dotenv import load_dotenv
+# archaic: 
+# archaic: from split_and_ingest import split_corpus, THRESHOLD_TOKENS, ASSISTANT_NAME
+# archaic: 
+# archaic: import openai
+# archaic: 
+# archaic: # ───────── CONFIG ─────────
+# archaic: load_dotenv()
+# archaic: openai.api_key = os.getenv("OPENAI_API_KEY")
+# archaic: 
+# archaic: INPUT_MD = Path(__file__).parent / "hadith_corpus.md"
+# archaic: 
+# archaic: # ───────── Instructions ─────────
+# archaic: INSTRUCTIONS = """
+# archaic: You are Al-Faqih AI, a Shia ḥadīth scholar with photographic memory.
+# archaic: 1. Always call the file_search tool first, using the user’s exact query.
+# archaic: 2. Quote the entire hadith text exactly as it appears in the corpus, including:
+# archaic:    • full Chain of Transmission (Isnād)
+# archaic:    • the original Arabic
+# archaic:    • the complete English translation
+# archaic:    • the exact link
+# archaic: 3. Do not add any commentary, summaries, symbols, or paraphrasing.
+# archaic: 4. For each relevant narration, follow this template exactly:
+# archaic: 
+# archaic: ### Hadith {#}
+# archaic: - English text including the entire chain of narration: …full Isnād and English here…
+# archaic: 
+# archaic: - Arabic Text: «…full Arabic here…»
+# archaic: 
+# archaic: - Link: [Link](https://thaqalayn.net/…)
+# archaic: 
+# archaic: - Summary of what the relevant hadith states
+# archaic: 
+# archaic: Repeat verbatim for each hadith. Never deviate.
+# archaic: 
+# archaic: Below is a sample conversation: 
+# archaic: 
+# archaic: hi
+# archaic: Hello! How can I assist you today? If you have any questions or requests regarding the hadith or related topics, feel free to let me know!
+# archaic: Can you do wudhu from a well if a dog fell in it
+# archaic: Let's look at the findings regarding the scenario of performing Wudhu with water from a well where a dog has fallen.
+# archaic: 
+# archaic: ### Hadith 1:
+# archaic: > **Arabic:** «عِدَّةٌ مِنْ أَصْحَابِنَا عَنْ أَحْمَدَ بْنِ مُحَمَّدٍ عَنِ الْحُسَيْنِ بْنِ سَعِيدٍ عَنْ ابْنِ سِنَانٍ عَنْ أَبِي بَصِيرٍ قَالَ سَأَلْتُ أَبَا عَبْدِ الله (عَلَيْهِ الْسَّلام) عَمَّا يَقَعُ فِي الآبَارِ فَقَالَ أَمَّا الْفَأْرَةُ وَأَشْبَاهُهَا فَيُنْزَحُ مِنْهَا سَبْعُ دِلاَءٍ إِلاَّ أَنْ يَتَغَيَّرَ الْمَاءُ فَيُنْزَحَ حَتَّى يَطِيبَ فَإِنْ سَقَطَ فِيهَا كَلْبٌ فَقَدَرْتَ أَنْ تَنْزَحَ مَاءَهَا فَافْعَلْ وَكُلُّ شَيْ‏ءٍ وَقَعَ فِي الْبِئْرِ لَيْسَ لَهُ دَمٌ مِثْلُ الْعَقْرَبِ وَالْخَنَافِسِ وَأَشْبَاهِ ذَلِكَ فَلاَ بَأْسَ.»   
+# archaic: 
+# archaic: > **English:** “A number of our people have narrated from Ahmad ibn Muhammad from al-Husayn ibn Sa‘id from ibn Sinan from abu Basir who has said the following: 'I once asked abu ‘Abd Allah, about things that fall into the wells. He (the Imam) said, ‘Because of rats and similar things, seven buckets of water must be drawn out, unless the water is changed, in which case drawing water out must continue until it becomes clean. If a dog falls in it, if you can, draw all of the water out.’”  
+# archaic: > [Link](https://thaqalayn.net/hadith/3/1/4/6)
+# archaic: 
+# archaic: ### Hadith 2:
+# archaic: > **Arabic:** «أَحْمَدُ بْنُ إِدْرِيسَ عَنْ مُحَمَّدِ بْنِ عَبْدِ الْجَبَّارِ عَنْ صَفْوَانَ عَنِ ابْنِ مُسْكَانَ عَنْ الْحَلَبِيِّ عَنْ أَبِي عَبْدِ الله (عَلَيْهِ الْسَّلام) قَالَ إِذَا سَقَطَ فِي الْبِئْرِ شَيْ‏ءٌ صَغِيرٌ فَمَاتَ فِيهَا فَانْزَحْ مِنْهَا دِلاَءً وَإِنْ وَقَعَ فِيهَا جُنُبٌ فَانْزَحْ مِنْهَا سَبْعَ دِلاَءٍ فَإِنْ مَاتَ فِيهَا بَعِيرٌ أَوْ صُبَّ فِيهَا خَمْرٌ فَلْيُنْزَحْ. »
+# archaic: 
+# archaic: > **English:** “Ahmad ibn Idris has narrated from Muhammad ‘Abd al-Jabbar from Safwan from ibn Muskan from al-Halabiy who has said the following: ‘Abu ‘Abd Allah, has said, ‘If something small falls in a well and dies, then take a few buckets of water out. If a person involved in sexual activities (because of which Ghusl (bath) is obligatory) falls in it, you must draw seven buckets of water out thereof. If a camel dies in it or wine is poured in it then you must draw out all of the water.’”  
+# archaic: > [Link](https://thaqalayn.net/hadith/3/1/4/7)
+# archaic: 
+# archaic: ### Hadith Summary:
+# archaic: From these narrations, if a dog falls into a well, it is recommended to draw out all of the water if possible. In cases where the water hasn’t changed and remains clear, it still may be permissible to draw a large quantity of water (in the case of an animal death or other contaminants) prior to using it for Wudhu.
+# archaic: 
+# archaic: ### Conclusion:
+# archaic: If a dog has fallen into a well, it is best to draw all the water out of it for purity. However, if that is not feasible, one must ensure the water is not contaminated before performing Wudhu. Always respect the purification requirements laid out in the teachings of the Imams for maintaining ritual cleanliness.
+# archaic: 
+# archaic: If you have any more questions or need further clarification, feel free to ask!
+# archaic: """
+# archaic: 
+# archaic: def init_rag():
+# archaic:     split_dir, parts = split_corpus(INPUT_MD, THRESHOLD_TOKENS)
+# archaic: 
+# archaic:     # 1) Upload corpus parts
+# archaic:     file_ids = []
+# archaic:     for f in parts:
+# archaic:         fid = openai.files.create(file=open(f, "rb"), purpose="assistants").id
+# archaic:         file_ids.append(fid)
+# archaic: 
+# archaic:     # 2) Create vector store
+# archaic:     vs = openai.vector_stores.create(name="HadithStore", file_ids=file_ids)
+# archaic: 
+# archaic:     # 3) Create new assistant with strict prompt
+# archaic:     asst = openai.beta.assistants.create(
+# archaic:         name=ASSISTANT_NAME,
+# archaic:         model="gpt-4o-mini",
+# archaic:         instructions=INSTRUCTIONS,
+# archaic:         tools=[{"type": "file_search"}],
+# archaic:         tool_resources={"file_search": {"vector_store_ids": [vs.id]}}
+# archaic:     )
+# archaic: 
+# archaic:     # Print IDs for env var setup
+# archaic:     print("🗂️ RAG File IDs: "        + ",".join(file_ids), file=sys.stdout)
+# archaic:     print("📚 RAG Vector Store ID: " + vs.id,                 file=sys.stdout)
+# archaic:     print("🚀 RAG Assistant ID: "    + asst.id,               file=sys.stdout)
+# archaic: 
+# archaic:     # Cleanup temp files
+# archaic:     for f in parts:
+# archaic:         try: f.unlink()
+# archaic:         except: pass
+# archaic: 
+# archaic:     return asst.id, vs.id, file_ids
+# archaic: 
+# archaic: # ───────── Initialize or Reuse (Option 2) ─────────
+# archaic: if os.getenv("RAG_ASSISTANT_ID") and os.getenv("RAG_STORE_ID") and os.getenv("RAG_FILE_IDS"):
+# archaic:     ASST_ID  = os.getenv("RAG_ASSISTANT_ID")
+# archaic:     VS_ID    = os.getenv("RAG_STORE_ID")
+# archaic:     FILE_IDS = os.getenv("RAG_FILE_IDS").split(",")
+# archaic: 
+# archaic:     # **Update existing assistant** with new instructions
+# archaic:     openai.beta.assistants.update(
+# archaic:         assistant_id=ASST_ID,
+# archaic:         instructions=INSTRUCTIONS
+# archaic:     )
+# archaic: else:
+# archaic:     ASST_ID, VS_ID, FILE_IDS = init_rag()
+# archaic: 
+# archaic: 
+# archaic: # ───────── Flask App ─────────
+# archaic: app = Flask(__name__)
+# archaic: CORS(app)
+# archaic: conversation_threads = {}
+# archaic: 
+# archaic: @app.errorhandler(Exception)
+# archaic: def handle_exceptions(e):
+# archaic:     app.logger.exception("Unhandled exception")
+# archaic:     return jsonify({"reply": "⚠️ Internal server error"}), 500
+# archaic: 
+# archaic: @app.route("/api/hadith", methods=["POST"])
+# archaic: def hadith_endpoint():
+# archaic:     data    = request.get_json(force=True)
+# archaic:     query   = data.get("query", "").strip()
+# archaic:     conv_id = data.get("conversationId", "").strip()
+# archaic: 
+# archaic:     if not query or not conv_id:
+# archaic:         return jsonify({"reply": "⚠️ 'query' and 'conversationId' are required"}), 400
+# archaic: 
+# archaic:     # Prime thread on first message
+# archaic:     if conv_id not in conversation_threads:
+# archaic:         thread = openai.beta.threads.create()
+# archaic:         conversation_threads[conv_id] = thread.id
+# archaic:         openai.beta.threads.messages.create(
+# archaic:             thread_id=thread.id,
+# archaic:             role="user",
+# archaic:             content="Load the corpus, please.",
+# archaic:             attachments=[{"file_id": FILE_IDS[0], "tools":[{"type":"file_search"}]}]
+# archaic:         )
+# archaic: 
+# archaic:     tid = conversation_threads[conv_id]
+# archaic: 
+# archaic:     # Attach file_search on every user turn
+# archaic:     openai.beta.threads.messages.create(
+# archaic:         thread_id=tid,
+# archaic:         role="user",
+# archaic:         content=query,
+# archaic:         attachments=[{"file_id": FILE_IDS[0], "tools":[{"type":"file_search"}]}]
+# archaic:     )
+# archaic: 
+# archaic:     run = openai.beta.threads.runs.create(thread_id=tid, assistant_id=ASST_ID)
+# archaic:     while True:
+# archaic:         status = openai.beta.threads.runs.retrieve(thread_id=tid, run_id=run.id).status
+# archaic:         if status == "completed":
+# archaic:             break
+# archaic:         time.sleep(0.5)
+# archaic: 
+# archaic:     msgs = openai.beta.threads.messages.list(thread_id=tid).data
+# archaic:     resp = next((m for m in msgs if m.role=="assistant"), None)
+# archaic:     if not resp or not resp.content:
+# archaic:         return jsonify({"reply": "⚠️ No reply from assistant"}), 502
+# archaic: 
+# archaic:     text_obj = resp.content[0].text
+# archaic:     reply    = getattr(text_obj, "markdown", None) or getattr(text_obj, "value", "")
+# archaic:     return jsonify({"reply": reply}), 200
+# archaic: 
+# archaic: @app.route("/", methods=["GET"])
+# archaic: def health_check():
+# archaic:     return "✅ Hadith AI API is up", 200
+# archaic: 
+# archaic: if __name__ == "__main__":
+# archaic:     port = int(os.getenv("PORT", 5000))
+# archaic:     app.run(host="0.0.0.0", port=port)
+# archaic: 

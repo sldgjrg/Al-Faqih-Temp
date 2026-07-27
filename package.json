@@ -1,0 +1,47 @@
+{
+  "name": "faqih-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "npm run index:hadith",
+    "dev": "next dev --turbopack",
+    "index:hadith": "node scripts/build-local-hadith-index.mjs",
+    "prebuild": "npm run index:hadith",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@fortawesome/free-solid-svg-icons": "^6.7.2",
+    "@fortawesome/react-fontawesome": "^0.2.2",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.5.0",
+    "fs-extra": "^11.3.0",
+    "lucide-react": "^0.475.0",
+    "next": "15.1.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.4.7",
+    "tailwind-merge": "^3.0.2"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "concurrently": "^9.1.2",
+    "eslint": "^9",
+    "eslint-config-next": "15.1.7",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    
+    "@types/node": "22.13.5",
+    "@types/react": "19.0.10"
+  },
+  "archaicDependencies": {
+    "note": "archaic: retained only as a record of the retired OpenAI ingestion path",
+    "@dqbd/tiktoken": "^1.0.20",
+    "js-tiktoken": "^1.0.19",
+    "openai": "^4.95.1"
+  }
+}
