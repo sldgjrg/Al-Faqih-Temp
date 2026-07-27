@@ -9,7 +9,7 @@
     "prebuild": "npm run index:hadith",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint src scripts/*.mjs public/hadith-search.worker.js"
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^6.7.2",

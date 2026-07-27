@@ -33,6 +33,9 @@ let lexicalHashes;
 let lexicalTf;
 let documentLengths;
 let databasePromise;
+let initializationPromise;
+let coreReady = false;
+let keywordReady = false;
 
 function openDatabase() {
   if (databasePromise) return databasePromise;
@@ -75,7 +78,9 @@ async function fetchAndStore(key, path, format = "arrayBuffer") {
   const response = await fetch(path);
   if (!response.ok) throw new Error(`Could not load ${path} (${response.status})`);
   const value = await response[format]();
-  await writeStored(key, value);
+  // Persistence should never delay first use. A later visit can read the same
+  // value from IndexedDB after this background write finishes.
+  writeStored(key, value).catch(() => {});
   return value;
 }
 
@@ -237,6 +242,7 @@ function topCandidates(query, filters) {
   const tokens = expandInstructionalIntent(query, tokensFor(query));
   const prayerInstruction = isPrayerInstructionQuery(query);
   const wellContamination = isWellContaminationQuery(query);
+  const useKeyword = keywordReady;
   const uniqueTokens = [...new Set(tokens)];
   const queryHashes = new Map();
   for (const token of tokens) {
@@ -259,18 +265,20 @@ function topCandidates(query, filters) {
     }
     semantic = semantic / 12100;
 
-    const lexicalOffset = id * manifest.lexicalSlots;
     let lexical = 0;
     let matchedTerms = 0;
-    for (let slot = 0; slot < manifest.lexicalSlots; slot += 1) {
-      const termHash = lexicalHashes[lexicalOffset + slot];
-      if (!termHash || !queryHashes.has(termHash)) continue;
-      const tf = lexicalTf[lexicalOffset + slot];
-      const df = manifest.df[termHash.toString(36)] || total;
-      const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
-      const lengthNorm = 1 - 0.75 + 0.75 * (documentLengths[id] / averageLength);
-      lexical += idf * ((tf * 2.2) / (tf + 1.2 * lengthNorm));
-      matchedTerms += 1;
+    if (useKeyword) {
+      const lexicalOffset = id * manifest.lexicalSlots;
+      for (let slot = 0; slot < manifest.lexicalSlots; slot += 1) {
+        const termHash = lexicalHashes[lexicalOffset + slot];
+        if (!termHash || !queryHashes.has(termHash)) continue;
+        const tf = lexicalTf[lexicalOffset + slot];
+        const df = manifest.df[termHash.toString(36)] || total;
+        const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
+        const lengthNorm = 1 - 0.75 + 0.75 * (documentLengths[id] / averageLength);
+        lexical += idf * ((tf * 2.2) / (tf + 1.2 * lengthNorm));
+        matchedTerms += 1;
+      }
     }
 
     const [titleIndex, , , , chapterIndex] = meta;
@@ -461,45 +469,81 @@ async function rerank(query, candidates, queryTokens) {
   return selected;
 }
 
-async function initialize() {
-  self.postMessage({ type: "status", message: "Loading local corpus index" });
-  let latestManifest;
-  try {
-    const response = await fetch("/hadith-data/manifest.json", { cache: "no-cache" });
-    if (!response.ok) throw new Error("Manifest request failed");
-    latestManifest = await response.json();
-    await writeStored("manifest-current", latestManifest);
-  } catch {
-    latestManifest = await readStored("manifest-current");
-  }
-  if (!latestManifest) throw new Error("The local corpus has not been installed yet.");
-  manifest = latestManifest;
-  const prefix = manifest.version;
-  const [denseBuffer, hashBuffer, tfBuffer, lengthBuffer] = await Promise.all([
-    fetchAndStore(`${prefix}:dense`, "/hadith-data/dense.bin"),
-    fetchAndStore(`${prefix}:lexical-hashes`, "/hadith-data/lexical-hashes.bin"),
-    fetchAndStore(`${prefix}:lexical-tf`, "/hadith-data/lexical-tf.bin"),
-    fetchAndStore(`${prefix}:document-lengths`, "/hadith-data/document-lengths.bin"),
-  ]);
-  dense = new Int8Array(denseBuffer);
-  lexicalHashes = new Uint32Array(hashBuffer);
-  lexicalTf = new Uint8Array(tfBuffer);
-  documentLengths = new Uint16Array(lengthBuffer);
+function readyManifest(mode) {
+  return {
+    version: manifest.version,
+    documentCount: manifest.documentCount,
+    shardCount: manifest.shardCount,
+    collections: manifest.strings.collections,
+    authors: manifest.strings.authors,
+    imams: manifest.imams,
+    mode,
+  };
+}
+
+function postReady(mode) {
   self.postMessage({
     type: "ready",
-    manifest: {
-      version: manifest.version,
-      documentCount: manifest.documentCount,
-      shardCount: manifest.shardCount,
-      collections: manifest.strings.collections,
-      authors: manifest.strings.authors,
-      imams: manifest.imams,
-    },
+    manifest: readyManifest(mode),
   });
 }
 
+async function loadKeywordIndex(prefix) {
+  if (keywordReady) return;
+  self.postMessage({ type: "status", message: "Semantic search ready · adding keyword index" });
+  const [hashBuffer, tfBuffer] = await Promise.all([
+    fetchAndStore(`${prefix}:lexical-hashes`, "/hadith-data/lexical-hashes.bin"),
+    fetchAndStore(`${prefix}:lexical-tf`, "/hadith-data/lexical-tf.bin"),
+  ]);
+  lexicalHashes = new Uint32Array(hashBuffer);
+  lexicalTf = new Uint8Array(tfBuffer);
+  keywordReady = true;
+  self.postMessage({ type: "status", message: "Dense + keyword index ready" });
+  postReady("hybrid");
+}
+
+async function initialize() {
+  if (coreReady) {
+    postReady(keywordReady ? "hybrid" : "semantic");
+    return;
+  }
+  if (initializationPromise) return initializationPromise;
+
+  initializationPromise = (async () => {
+    self.postMessage({ type: "status", message: "Loading corpus catalog" });
+    let latestManifest;
+    try {
+      const response = await fetch("/hadith-data/manifest.json", { cache: "no-cache" });
+      if (!response.ok) throw new Error("Manifest request failed");
+      latestManifest = await response.json();
+      writeStored("manifest-current", latestManifest).catch(() => {});
+    } catch {
+      latestManifest = await readStored("manifest-current");
+    }
+    if (!latestManifest) throw new Error("The local corpus has not been installed yet.");
+    manifest = latestManifest;
+    const prefix = manifest.version;
+
+    self.postMessage({ type: "status", message: "Loading semantic search index" });
+    const [denseBuffer, lengthBuffer] = await Promise.all([
+      fetchAndStore(`${prefix}:dense`, "/hadith-data/dense.bin"),
+      fetchAndStore(`${prefix}:document-lengths`, "/hadith-data/document-lengths.bin"),
+    ]);
+    dense = new Int8Array(denseBuffer);
+    documentLengths = new Uint16Array(lengthBuffer);
+    coreReady = true;
+    postReady("semantic");
+
+    loadKeywordIndex(prefix).catch(() => {
+      self.postMessage({ type: "status", message: "Semantic search ready · keyword index unavailable" });
+    });
+  })();
+
+  return initializationPromise;
+}
+
 async function search({ requestId, query, filters }) {
-  if (!manifest) await initialize();
+  if (!coreReady) await initialize();
   const parsed = parseInlineFilters(query, filters);
   self.postMessage({ type: "status", requestId, message: "Comparing dense and keyword candidates" });
   const started = performance.now();

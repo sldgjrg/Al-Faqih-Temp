@@ -495,6 +495,7 @@ export default function LocalHadithChat() {
   const [filters, setFilters] = useState({ collection: "", author: "", imam: "" });
   const [manifest, setManifest] = useState(null);
   const [engineError, setEngineError] = useState("");
+  const [engineStatus, setEngineStatus] = useState("Starting local search");
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [download, setDownload] = useState({ active: false, current: 0, total: 0, complete: false });
   const workerRef = useRef(null);
@@ -538,7 +539,9 @@ export default function LocalHadithChat() {
       if (data.type === "ready") {
         setManifest(data.manifest);
         setEngineError("");
+        setEngineStatus(data.manifest.mode === "hybrid" ? "Dense + keyword index ready" : "Keyword index loading");
       }
+      if (data.type === "status" && !data.requestId) setEngineStatus(data.message);
       if (data.type === "status" && data.requestId) {
         const conversationId = pendingRef.current.get(data.requestId)?.conversationId;
         setConversations((items) => items.map((conversation) =>
@@ -572,7 +575,10 @@ export default function LocalHadithChat() {
             : conversation));
       }
       if (data.type === "error") {
-        if (!data.requestId) setEngineError(data.message);
+        if (!data.requestId) {
+          setEngineError(data.message);
+          setEngineStatus("");
+        }
         const conversationId = pendingRef.current.get(data.requestId)?.conversationId;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
@@ -740,8 +746,18 @@ export default function LocalHadithChat() {
         <div className="local-status">
           <div className={manifest ? "status-dot ready" : "status-dot"} />
           <div>
-            <strong>{manifest ? "Local index ready" : engineError || "Installing index"}</strong>
-            <span>{manifest ? `${manifest.documentCount.toLocaleString()} ahadith in this corpus · ${manifest.version}` : "One-time setup"}</span>
+            <strong>
+              {manifest
+                ? manifest.mode === "hybrid" ? "Local index ready" : "Semantic search ready"
+                : engineError || engineStatus || "Installing index"}
+            </strong>
+            <span>
+              {manifest
+                ? manifest.mode === "hybrid"
+                  ? `${manifest.documentCount.toLocaleString()} ahadith in this corpus · ${manifest.version}`
+                  : `${manifest.documentCount.toLocaleString()} ahadith · keyword index loading`
+                : engineStatus && !engineError ? "Preparing on-device search" : "One-time setup"}
+            </span>
           </div>
         </div>
         <button

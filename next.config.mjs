@@ -2,6 +2,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  eslint: {
+    // ESLint still runs through `npm run lint`; this avoids Next serializing
+    // FlatCompat's parser functions during production builds.
+    ignoreDuringBuilds: true,
+  },
   images: {
     domains: [
       'framerusercontent.com',
