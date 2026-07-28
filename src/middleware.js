@@ -1,51 +1,79 @@
 import { NextResponse } from "next/server";
 
-const CHAT_HOST = (process.env.CHAT_HOST || "chat.alfaqih.org").toLowerCase();
-const ROOT_HOSTS = new Set([
-  (process.env.ROOT_HOST || "alfaqih.org").toLowerCase(),
-  `www.${(process.env.ROOT_HOST || "alfaqih.org").toLowerCase()}`,
-]);
+const ROOT_HOST = (
+  process.env.ROOT_HOST || "alfaqih.org"
+).toLowerCase();
 
-function hostnameFrom(request) {
-  return (request.headers.get("host") || "")
+const CHAT_HOST = (
+  process.env.CHAT_HOST || "chat.alfaqih.org"
+).toLowerCase();
+
+function getHostname(request) {
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const regularHost = request.headers.get("host");
+
+  return String(forwardedHost || regularHost || "")
+    .split(",")[0]
     .split(":")[0]
     .trim()
     .toLowerCase();
 }
 
-function isChatHostname(hostname) {
-  return hostname === CHAT_HOST || hostname === "chat.localhost";
+function isChatHost(hostname) {
+  return (
+    hostname === CHAT_HOST ||
+    hostname === "chat.localhost"
+  );
+}
+
+function isProductionRootHost(hostname) {
+  return (
+    hostname === ROOT_HOST ||
+    hostname === `www.${ROOT_HOST}`
+  );
 }
 
 export function middleware(request) {
-  const hostname = hostnameFrom(request);
-  const url = request.nextUrl.clone();
+  const hostname = getHostname(request);
+  const pathname = request.nextUrl.pathname;
 
-  // chat.alfaqih.org/ renders the internal /chat route while the public URL
-  // remains clean. Static assets, API routes, and service workers keep their
-  // normal paths and are therefore shared by both domains.
-  if (isChatHostname(hostname)) {
-    if (url.pathname === "/") {
-      url.pathname = "/chat";
-      return NextResponse.rewrite(url);
+  /*
+   * chat.alfaqih.org/
+   *
+   * Internally render /chat, but leave the browser URL as:
+   * https://chat.alfaqih.org/
+   */
+  if (isChatHost(hostname)) {
+    if (pathname === "/") {
+      const rewriteUrl = request.nextUrl.clone();
+      rewriteUrl.pathname = "/chat";
+
+      return NextResponse.rewrite(rewriteUrl);
     }
 
-    if (url.pathname === "/chat") {
-      url.pathname = "/";
-      return NextResponse.redirect(url);
-    }
-
+    /*
+     * IMPORTANT:
+     * Do not redirect /chat back to / here.
+     * The internal rewrite may pass through middleware again.
+     */
     return NextResponse.next();
   }
 
-  // Keep /chat usable on previews and localhost. On the production root
-  // domain, however, send visitors to the dedicated chat subdomain.
-  if (ROOT_HOSTS.has(hostname) && url.pathname === "/chat") {
+  /*
+   * alfaqih.org/chat
+   *
+   * Redirect production visitors to the dedicated subdomain.
+   * Keep /chat available on localhost and Vercel preview URLs.
+   */
+  if (isProductionRootHost(hostname) && pathname === "/chat") {
     const destination = new URL(request.url);
+
     destination.protocol = "https:";
-    destination.host = CHAT_HOST;
+    destination.hostname = CHAT_HOST;
+    destination.port = "";
     destination.pathname = "/";
-    destination.search = url.search;
+    destination.search = request.nextUrl.search;
+
     return NextResponse.redirect(destination, 308);
   }
 
@@ -54,6 +82,6 @@ export function middleware(request) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|woff2?|ttf)$).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|sw.js|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|woff2?|ttf)$).*)",
   ],
 };
