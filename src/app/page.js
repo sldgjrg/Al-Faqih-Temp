@@ -1811,7 +1811,7 @@ export default function LocalHadithChat() {
     }
 
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=14", {
+      chatWorker = new Worker("/local-llm.worker.js?v=15", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -1867,7 +1867,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=15", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -1925,7 +1925,7 @@ export default function LocalHadithChat() {
         if (data.results.length && pending?.query) {
           requestLocalGeneration(synthesisMessages(pending.query, data.results), {
             mode: "synthesis",
-            maxNewTokens: 220,
+            maxNewTokens: 300,
             temperature: 0,
           })
             .then((generation) => {
@@ -2174,6 +2174,7 @@ export default function LocalHadithChat() {
       conversationId: current.id,
       query,
       retrievalQuery,
+      retrievalProfile: localResponse.retrievalProfile || null,
       language: localResponse.language,
     });
     setConversations((items) => items.map((conversation) =>
@@ -2188,7 +2189,13 @@ export default function LocalHadithChat() {
           }
         : conversation));
     setInput("");
-    workerRef.current?.postMessage({ type: "search", requestId, query: retrievalQuery, filters });
+    workerRef.current?.postMessage({
+      type: "search",
+      requestId,
+      query: retrievalQuery,
+      filters,
+      retrievalProfile: localResponse.retrievalProfile || null,
+    });
   }
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length;

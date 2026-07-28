@@ -264,9 +264,15 @@ export function validateGeneratedReply(value, {
   }
 
   if (mode === "synthesis") {
-    const required = ["direct answer", "how the reports fit together", "limits of the evidence"];
+    const headings = ["direct answer", "how the reports fit together", "limits of the evidence"];
     const normalized = normalizeForComparison(text);
-    if (!required.every((heading) => normalized.includes(heading))) {
+    const headingCount = headings.filter((heading) => normalized.includes(heading)).length;
+    const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+    const sentenceCount = (text.match(/[.!?؟](?:\s|$)/gu) || []).length;
+    if (wordsOf(text).length < 18) {
+      return { ok: false, text: "", reason: "synthesis-too-short" };
+    }
+    if (headingCount < 2 && paragraphs.length < 2 && sentenceCount < 3) {
       return { ok: false, text: "", reason: "missing-synthesis-structure" };
     }
   }

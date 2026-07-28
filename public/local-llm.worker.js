@@ -140,7 +140,16 @@ function latestUserContent(messages) {
   return [...messages].reverse().find((message) => message.role === "user")?.content || "";
 }
 
-function repairMessages(latestUserMessage, reason) {
+function repairMessages(latestUserMessage, reason, mode) {
+  if (mode === "synthesis") {
+    return [
+      {
+        role: "system",
+        content: `Write a grounded answer using only the retrieved reports supplied by the user. Use the headings Direct answer, How the reports fit together, and Limits of the evidence. Mention distinct reports when they add separate evidence. Do not invent a narration or ruling. The previous draft was rejected because: ${reason}.`,
+      },
+      { role: "user", content: latestUserMessage },
+    ];
+  }
   return [
     {
       role: "system",
@@ -227,9 +236,15 @@ async function generate(data) {
   }
   let checked = validateGeneratedReply(completion.text, { latestUserMessage, mode });
 
-  if (!checked.ok && mode === "conversation") {
+  if (!checked.ok && (mode === "conversation" || mode === "synthesis")) {
     attempts += 1;
-    completion = await complete(localEngine, data, repairMessages(latestUserMessage, checked.reason), mode, true);
+    completion = await complete(
+      localEngine,
+      data,
+      repairMessages(latestUserMessage, checked.reason, mode),
+      mode,
+      true,
+    );
     checked = validateGeneratedReply(completion.text, { latestUserMessage, mode });
   }
   if (!checked.ok) throw new Error(`The local model returned an unusable reply (${checked.reason}).`);

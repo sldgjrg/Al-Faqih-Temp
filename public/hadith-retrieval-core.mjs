@@ -615,6 +615,11 @@
  * regression suite.  The ranker deliberately uses corpus evidence rather than
  * query-specific intent rules or narration IDs.
  */
+/*
+ * Shared retrieval primitives for the index builder, browser worker, and
+ * regression suite.  The ranker deliberately uses corpus evidence rather than
+ * query-specific intent rules or narration IDs.
+ */
 
 export const PASSAGE_SIZE = 64;
 export const PASSAGE_STRIDE = 48;
@@ -821,9 +826,14 @@ function queryFeatureBaseWeight(feature) {
   return 1;
 }
 
-export function buildQueryPlan(query, manifest) {
+export function buildQueryPlan(query, manifest, retrievalProfile = {}) {
+  const profile = retrievalProfile && typeof retrievalProfile === "object" ? retrievalProfile : {};
+  const boostText = Array.isArray(profile.boostTerms) ? profile.boostTerms.join(" ") : "";
+  const boostStrength = Math.max(0, Math.min(0.5, Number(profile.boostStrength) || (profile.strictFacet ? 0.38 : 0.16)));
   const tokens = tokenize(query);
   const uniqueTokens = [...new Set(tokens)];
+  const boostTokens = [...new Set(tokenize(boostText))];
+  const entityTokens = [...new Set(tokenize(Array.isArray(profile.entityTerms) ? profile.entityTerms.join(" ") : ""))];
   const featureWeights = new Map();
   const literalHashes = new Map();
   const phraseHashes = new Set();
@@ -883,22 +893,56 @@ export function buildQueryPlan(query, manifest) {
     literalHashes.set(featureHash, token);
   }
 
-  for (const token of uniqueTokens) {
-    const sourceHash = hashFeature(unigramFeature(token)).toString(36);
-    const associations = manifest.crossLanguage?.[sourceHash] || [];
-    for (const [targetHash, encodedWeight] of associations) {
-      const weight = (encodedWeight / 255) * 0.42;
-      if (!dfForHash(manifest, targetHash)) continue;
-      featureWeights.set(targetHash, Math.max(featureWeights.get(targetHash) || 0, weight));
-      crossLanguageHashes.add(targetHash);
-      const sources = crossLanguageSources.get(targetHash);
-      if (sources) sources.set(sourceHash, encodedWeight / 255);
-      else crossLanguageSources.set(targetHash, new Map([[sourceHash, encodedWeight / 255]]));
+  const addAuxiliaryTokens = (auxiliaryTokens, featureStrength, sourceStrength) => {
+    for (const token of auxiliaryTokens) {
+      const featureHash = hashFeature(unigramFeature(token));
+      const sourceHash = featureHash.toString(36);
+      const frequency = dfForHash(manifest, featureHash);
+      if (!frequency) continue;
+      featureWeights.set(featureHash, Math.max(featureWeights.get(featureHash) || 0, featureStrength));
+      literalHashes.set(featureHash, token);
+      sourceWeights.set(
+        sourceHash,
+        Math.max(
+          sourceWeights.get(sourceHash) || 0,
+          Math.min(3.2, inverseDocumentFrequency(manifest.passageCount, frequency)) * sourceStrength,
+        ),
+      );
+      sourceTokens.set(sourceHash, token);
     }
-  }
+  };
+  addAuxiliaryTokens(boostTokens, boostStrength, profile.strictFacet ? 0.58 : 0.3);
+  addAuxiliaryTokens(entityTokens, 0.24, 0.24);
+
+  const addAssociations = (associationTokens, scale) => {
+    for (const token of associationTokens) {
+      const sourceHash = hashFeature(unigramFeature(token)).toString(36);
+      const associations = manifest.crossLanguage?.[sourceHash] || [];
+      for (const [targetHash, encodedWeight] of associations) {
+        const weight = (encodedWeight / 255) * scale;
+        if (!dfForHash(manifest, targetHash)) continue;
+        featureWeights.set(targetHash, Math.max(featureWeights.get(targetHash) || 0, weight));
+        crossLanguageHashes.add(targetHash);
+        const sources = crossLanguageSources.get(targetHash);
+        if (sources) sources.set(sourceHash, encodedWeight / 255);
+        else crossLanguageSources.set(targetHash, new Map([[sourceHash, encodedWeight / 255]]));
+      }
+    }
+  };
+  addAssociations(uniqueTokens, 0.42);
+  addAssociations(boostTokens, profile.strictFacet ? 0.2 : 0.08);
+  addAssociations(entityTokens, 0.12);
+
+  const sourceHashesForTerms = (terms) => new Set(
+    tokenize(Array.isArray(terms) ? terms.join(" ") : "")
+      .map((token) => hashFeature(unigramFeature(token)).toString(36)),
+  );
+  const boostFacetSourceHashes = sourceHashesForTerms(profile.boostTerms);
+  const requiredFacetSourceHashes = sourceHashesForTerms(profile.requiredTerms);
+  const entitySourceHashes = sourceHashesForTerms(profile.entityTerms);
 
   const requiredImamIndex = requestedImamIndex(query, manifest);
-  const shouldRequireFocus = uniqueTokens.length >= 3 && uniqueTokens.length <= 5;
+  const shouldRequireFocus = !profile.disableFocus && uniqueTokens.length >= 3 && uniqueTokens.length <= 5;
   const focusSourceHash = shouldRequireFocus
     ? [...sourceWeights.entries()]
         .filter(([sourceHash]) => {
@@ -923,6 +967,10 @@ export function buildQueryPlan(query, manifest) {
     crossLanguageSources,
     sourceWeights,
     sourceTokens,
+    retrievalProfile: profile,
+    boostFacetSourceHashes,
+    requiredFacetSourceHashes,
+    entitySourceHashes,
   };
 }
 
@@ -947,9 +995,10 @@ export function rankPassageCandidates({
   passageLengths,
   query,
   filters,
+  retrievalProfile,
   limit = 240,
 }) {
-  const plan = buildQueryPlan(query, manifest);
+  const plan = buildQueryPlan(query, manifest, retrievalProfile);
   if (!plan.featureWeights.size) return { plan, candidates: [] };
 
   const byDocument = new Map();
@@ -1201,6 +1250,36 @@ export function bestEvidenceWindow(tokens, plan, manifest, windowSize = 28) {
   };
 }
 
+function tokenMatchesSourceSet(token, sourceSet, plan) {
+  if (!sourceSet?.size) return false;
+  const featureHash = hashFeature(unigramFeature(token));
+  if (sourceSet.has(featureHash.toString(36))) return true;
+  for (const sourceHash of plan.crossLanguageSources.get(featureHash)?.keys() || []) {
+    if (sourceSet.has(sourceHash)) return true;
+  }
+  return false;
+}
+
+function hasSourceProximity(tokens, leftSources, rightSources, plan, maximumDistance = 14) {
+  if (!leftSources?.size || !rightSources?.size) return false;
+  const leftIndices = [];
+  const rightIndices = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (tokenMatchesSourceSet(token, leftSources, plan)) leftIndices.push(index);
+    if (tokenMatchesSourceSet(token, rightSources, plan)) rightIndices.push(index);
+  }
+  let leftCursor = 0;
+  let rightCursor = 0;
+  while (leftCursor < leftIndices.length && rightCursor < rightIndices.length) {
+    const distance = Math.abs(leftIndices[leftCursor] - rightIndices[rightCursor]);
+    if (distance <= maximumDistance) return true;
+    if (leftIndices[leftCursor] < rightIndices[rightCursor]) leftCursor += 1;
+    else rightCursor += 1;
+  }
+  return false;
+}
+
 function overlapRatio(leftTokens, rightTokens) {
   const left = new Set(leftTokens);
   const right = new Set(rightTokens);
@@ -1232,6 +1311,43 @@ export function rerankLoadedRecords({
       const title = manifest.strings.titles[titleIndex];
       const chapter = manifest.strings.chapters[chapterIndex];
       const titleEvidence = bestEvidenceWindow(tokenize(`${title} ${chapter}`), plan, manifest, 20);
+      const matchedSourceSet = new Set([
+        ...evidence.matchedSources,
+        ...titleEvidence.matchedSources,
+      ]);
+      const bodySourceSet = new Set(evidence.matchedSources);
+      const titleSourceSet = new Set(titleEvidence.matchedSources);
+      const facetMatches = [...plan.boostFacetSourceHashes].filter((sourceHash) => matchedSourceSet.has(sourceHash));
+      const requiredFacetMatches = [...plan.requiredFacetSourceHashes]
+        .filter((sourceHash) => matchedSourceSet.has(sourceHash));
+      const bodyFacetMatched = [...plan.requiredFacetSourceHashes].some((sourceHash) => bodySourceSet.has(sourceHash))
+        || (!plan.requiredFacetSourceHashes.size
+          && [...plan.boostFacetSourceHashes].some((sourceHash) => bodySourceSet.has(sourceHash)));
+      const titleFacetMatched = [...plan.requiredFacetSourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash))
+        || (!plan.requiredFacetSourceHashes.size
+          && [...plan.boostFacetSourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash)));
+      const bodyEntityMatched = !plan.entitySourceHashes.size
+        || [...plan.entitySourceHashes].some((sourceHash) => bodySourceSet.has(sourceHash));
+      const titleEntityMatched = !plan.entitySourceHashes.size
+        || [...plan.entitySourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash));
+      const trustedEntityTitle = /(?:imam.{0,20}(?:mahdi|time)|master.{0,12}age|al[- ]?qa[’'`]?im|qaim|صاحب الزمان|القائم)/iu.test(`${title} ${chapter}`);
+      const closeEntityFacet = hasSourceProximity(
+        textTokens,
+        plan.entitySourceHashes,
+        plan.requiredFacetSourceHashes.size ? plan.requiredFacetSourceHashes : plan.boostFacetSourceHashes,
+        plan,
+        14,
+      );
+      const facetCoverage = plan.boostFacetSourceHashes.size
+        ? Math.min(1, facetMatches.length / Math.max(1, Math.min(5, plan.boostFacetSourceHashes.size)))
+        : 0;
+      const facetMatched = plan.requiredFacetSourceHashes.size
+        ? requiredFacetMatches.length > 0
+        : facetMatches.length > 0;
+      const facetEntityProximity = !plan.entitySourceHashes.size
+        || closeEntityFacet
+        || (bodyFacetMatched && trustedEntityTitle)
+        || (titleFacetMatched && bodyEntityMatched && trustedEntityTitle);
       const candidateEvidence = Math.min(1, (candidate.candidateScore || 0) / topCandidateScore);
       const phraseConjunction = evidence.phraseEvidence >= 0.2
         ? Math.min(0.14, evidence.phraseEvidence * 0.42)
@@ -1248,13 +1364,17 @@ export function rerankLoadedRecords({
       const focusMatched = !plan.focusSourceHash || evidence.matchedSources.includes(plan.focusSourceHash)
         || titleEvidence.matchedSources.includes(plan.focusSourceHash);
       const focusBoost = plan.focusSourceHash && focusMatched ? 0.18 : 0;
-      const rawScore = directScore + relationBoost + focusBoost;
+      const facetBoost = Math.min(0.32, facetCoverage * 0.24 + (facetMatched ? 0.1 : 0));
+      const rawScore = directScore + relationBoost + focusBoost + facetBoost;
       const strategies = [];
       if (evidence.matchedLiteral) strategies.push("literal");
       if (evidence.phraseEvidence > 0.05) strategies.push("phrase");
       if (evidence.crossLanguage) strategies.push("cross-language");
       if (titleEvidence.coverage > 0.1) strategies.push("heading");
       if (relationScore >= 0.22) strategies.push("parallel-report");
+      if (facetMatched && plan.retrievalProfile?.facet && plan.retrievalProfile.facet !== "general") {
+        strategies.push(`intent-${plan.retrievalProfile.facet}`);
+      }
       return {
         id: candidate.id,
         rawScore,
@@ -1284,6 +1404,9 @@ export function rerankLoadedRecords({
         _matchedLiteral: evidence.matchedLiteral,
         _crossLanguage: evidence.crossLanguage,
         _focusMatched: focusMatched,
+        _facetMatched: facetMatched,
+        _facetCoverage: facetCoverage,
+        _facetEntityProximity: facetEntityProximity,
       };
     })
     .filter(Boolean)
@@ -1291,13 +1414,17 @@ export function rerankLoadedRecords({
       result._matchedSources > 0
       && (result.relationScore < 0.42 || result._coverage >= 0.3 || result._titleCoverage >= 0.12)
       && (result._focusMatched || result.relationScore >= 0.75)
+      && (!plan.retrievalProfile?.strictFacet
+        || (result._facetMatched && result._facetEntityProximity))
     ))
     .sort((left, right) => right.rawScore - left.rawScore);
 
   if (!ranked.length) return [];
   const topScore = ranked[0].rawScore;
-  const directFloor = Math.max(0.12, topScore * 0.46);
-  const relatedFloor = Math.max(0.11, topScore * 0.36);
+  const directFloorRatio = Math.max(0.25, Math.min(0.75, Number(plan.retrievalProfile?.directFloorRatio) || 0.46));
+  const relatedFloorRatio = Math.max(0.2, Math.min(0.7, Number(plan.retrievalProfile?.relatedFloorRatio) || 0.36));
+  const directFloor = Math.max(0.12, topScore * directFloorRatio);
+  const relatedFloor = Math.max(0.11, topScore * relatedFloorRatio);
   const eligible = ranked.filter((result) => (
     result.relationScore >= 0.22
       ? result.rawScore >= relatedFloor
@@ -1307,17 +1434,24 @@ export function rerankLoadedRecords({
   const selected = [];
   const chapterCounts = new Map();
   const shortQuery = plan.uniqueTokens.length <= 2;
-  const maxDirectResults = plan.focusSourceHash
-    ? 1
-    : shortQuery ? 1 : plan.uniqueTokens.length >= 5 ? 3 : resultLimit;
+  const maxDirectResults = Math.max(1, Math.min(
+    resultLimit,
+    Number(plan.retrievalProfile?.maxDirectResults)
+      || (plan.focusSourceHash ? 1 : shortQuery ? 1 : plan.uniqueTokens.length >= 5 ? 3 : resultLimit),
+  ));
+  const maxPerChapter = Math.max(1, Number(plan.retrievalProfile?.maxPerChapter) || 2);
   const topPhraseEvidence = eligible[0]?._phraseEvidence || 0;
   const phraseFloor = topPhraseEvidence >= 0.12 ? Math.max(0.06, topPhraseEvidence * 0.35) : 0;
   let nonParallelCount = 0;
   for (const result of eligible) {
     const chapterKey = normalizeText(`${result.collection} ${result.chapter}`);
     const isParallel = selected.length > 0 && result.relationScore >= 0.22;
-    if (!isParallel && (chapterCounts.get(chapterKey) || 0) >= 2) continue;
+    if (!isParallel && (chapterCounts.get(chapterKey) || 0) >= maxPerChapter) continue;
     if (!isParallel && nonParallelCount >= maxDirectResults) continue;
+    if (!isParallel && selected.length > 0) {
+      const secondaryDirectRatio = Math.max(0.45, Math.min(0.9, Number(plan.retrievalProfile?.secondaryDirectRatio) || 0.62));
+      if (result.rawScore < topScore * secondaryDirectRatio) continue;
+    }
     if (!isParallel && phraseFloor && result._phraseEvidence < phraseFloor) continue;
     if (selected.some((known) => overlapRatio(known._tokens, result._tokens) > 0.985)) continue;
     selected.push(result);
@@ -1339,6 +1473,9 @@ export function rerankLoadedRecords({
     _matchedLiteral,
     _crossLanguage,
     _focusMatched,
+    _facetMatched,
+    _facetCoverage,
+    _facetEntityProximity,
     ...result
   }, index) => ({
     ...result,

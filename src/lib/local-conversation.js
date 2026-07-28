@@ -77,22 +77,144 @@ export function applyMemoryUpdate(memory, update, conversationId) {
   return next;
 }
 
-function expandedReligiousQuery(query) {
-  const normalized = normalize(query);
-  const imamZamana = /\b(?:imam(?:-e)?\s+(?:zaman|zamana)|imam\s+of\s+the\s+age|sahib(?:-e|\s+az)?[-\s]?zaman|sahib\s+al[-\s]?zaman)\b/i.test(normalized)
-    || /(?:امام زمان|صاحب الزمان|صاحب العصر)/u.test(query);
-  if (imamZamana) {
-    const appearance = /\b(?:look like|appearance|physical description|describe|hair|face|stature|height)\b/i.test(normalized)
-      || /(?:کیسے دکھتے|حلیہ|صفات ظاہری|كيف يبدو|صفته)/u.test(query);
-    return appearance
-      ? "Imam al-Mahdi al-Qaim Sahib al-Zaman appearance face hair stature physical description"
-      : "Imam al-Mahdi al-Qaim Sahib al-Zaman identity lineage role twelve imams";
-  }
+const MAHDI_QUERY = /\b(?:imam(?:-e)?\s+(?:zaman|zamana)|imam\s+of\s+the\s+age|sahib(?:-e|\s+az)?[-\s]?zaman|sahib\s+al[-\s]?zaman|imam\s+mahdi|al[-\s]?mahdi|al[-\s]?qa[’'`]?im|qaim)\b/i;
+const MAHDI_SCRIPT_QUERY = /(?:امام زمان|صاحب الزمان|صاحب العصر|المهدي|القائم)/u;
 
-  const namedImam = normalized.match(/\bwho (?:is|was) imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu)
-    || normalized.match(/\btell me about imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu);
-  if (namedImam) return `${query} identity lineage role teachings`;
-  return "";
+const RETRIEVAL_FACETS = [
+  {
+    name: "appearance",
+    pattern: /\b(?:what\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look\s+like|how\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look|look(?:s|ed)?\s+like|physical\s+(?:appearance|description|features?)|describe\s+(?:his|the\s+imam(?:'s)?|imam\s+mahdi(?:'s)?|al[-\s]?mahdi(?:'s)?|al[-\s]?qaim(?:'s)?)\s+(?:appearance|features?|face|body)|appearance\s+of\s+(?:imam|the\s+imam|imam\s+mahdi|mahdi|the\s+mahdi|al[-\s]?qaim|the\s+qaim)|features?|complexion|forehead|eyebrows?|eyes?|nose|cheeks?|mole|beard|hair|curly|wavy|stature|height|build|shoulders?|young-looking|age appearance)\b/i,
+    scriptPattern: /(?:كيف يبدو|صفته|صفاته|حليته|حليته|شكله|وجهه|لونه|جبهته|حاجبه|عينيه|انفه|خده|خال|لحيته|شعره|جعد|قامته|منكبيه)/u,
+    strict: true,
+    terms: [
+      "face", "countenance", "complexion", "forehead",
+      "eyebrows", "eyes", "nose", "cheek", "mole", "beard", "hair", "curly", "wavy",
+      "stature", "height", "build", "shoulders",
+      "وجه", "لون", "جبهة", "حاجب", "عين", "أنف", "خد", "خال", "لحية", "شعر", "جعد", "قامة", "منكبان",
+    ],
+    resultLimit: 8,
+    maxDirectResults: 5,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.46,
+    relatedFloorRatio: 0.36,
+    disableFocus: true,
+  },
+  {
+    name: "identity",
+    pattern: /\b(?:who\s+(?:is|was|will\s+be)|identity|lineage|genealogy|father|mother|parents?|ancestor|descendant|son\s+of|name|title|kunya|which imam|twelfth imam)\b/i,
+    scriptPattern: /(?:من هو|من يكون|نسبه|ابوه|امه|والده|اسمه|لقبه|كنيته|الامام الثاني عشر)/u,
+    strict: false,
+    terms: ["lineage", "name", "father", "son", "descendant", "progeny", "twelfth imam"],
+    resultLimit: 8,
+    maxDirectResults: 4,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.35,
+    directFloorRatio: 0.32,
+    relatedFloorRatio: 0.28,
+    disableFocus: true,
+  },
+  {
+    name: "method",
+    pattern: /\b(?:how\s+(?:do|should|can|did)|teach\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
+    scriptPattern: /(?:كيف|علمني|طريقة|خطوات|كيفية|أؤدي|اصلي|أصلي|کیسے|طریقہ|سکھائیں)/u,
+    strict: false,
+    terms: [],
+    resultLimit: 8,
+    maxDirectResults: 1,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.68,
+  },
+  {
+    name: "signs-events",
+    pattern: /\b(?:signs?|before\s+(?:the\s+)?(?:appearance|reappearance|rise)|when\s+will|emergence|reappearance|advent|sufyani|dajjal|yamani)\b/i,
+    scriptPattern: /(?:علامات|قبل الظهور|الظهور|الخروج|السفياني|الدجال|اليماني)/u,
+    strict: false,
+    terms: [],
+    resultLimit: 8,
+    maxDirectResults: 5,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.55,
+  },
+  {
+    name: "conduct-deeds",
+    pattern: /\b(?:what\s+will\s+he\s+do|how\s+will\s+he\s+(?:act|rule)|deeds?|conduct|government|rule|justice|judge|army|companions?|actions?|practice|manner)\b/i,
+    scriptPattern: /(?:ماذا يفعل|كيف يحكم|سيرته|أعماله|حكمه|عدله|أصحابه)/u,
+    strict: false,
+    terms: [],
+    resultLimit: 8,
+    maxDirectResults: 4,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.55,
+    relatedFloorRatio: 0.58,
+  },
+  {
+    name: "legal-practical",
+    pattern: /\b(?:allowed|permitted|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|can\s+i|may\s+i|should\s+i|must\s+i|what\s+should\s+i\s+do)\b/i,
+    scriptPattern: /(?:يجوز|لا يجوز|واجب|مستحب|حرام|حلال|نجس|طاهر|حكم|کیا میں|جائز|ناجائز)/u,
+    strict: false,
+    terms: [],
+    resultLimit: 8,
+    maxDirectResults: 3,
+    maxPerChapter: 3,
+    secondaryDirectRatio: 0.68,
+  },
+];
+
+function entityExpansion(query, normalized) {
+  const hasMahdiEntity = MAHDI_QUERY.test(normalized) || MAHDI_SCRIPT_QUERY.test(query);
+  if (hasMahdiEntity) {
+    const needsCanonicalAlias = /\b(?:imam(?:-e)?\s+(?:zaman|zamana)|imam\s+of\s+the\s+age|sahib(?:-e|\s+az)?[-\s]?zaman|sahib\s+al[-\s]?zaman)\b/i.test(normalized)
+      || /(?:امام زمان|صاحب الزمان|صاحب العصر)/u.test(query);
+    return {
+      text: needsCanonicalAlias ? "Imam al-Mahdi al-Qaim" : "",
+      terms: ["mahdi", "qaim", "zaman", "master of the age", "man of this matter", "sahib al-amr", "المهدي", "القائم", "صاحب الزمان", "صاحب الامر"],
+      detected: true,
+    };
+  }
+  const namedImam = normalized.match(/\b(?:who\s+(?:is|was)\s+|tell\s+me\s+about\s+)?imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu);
+  return namedImam
+    ? { text: "", terms: [namedImam[1]], detected: true }
+    : { text: "", terms: [], detected: false };
+}
+
+export function buildReligiousSearchPlan(query) {
+  const original = String(query || "").trim();
+  const normalized = normalize(original);
+  const signsBeforeAppearance = /\b(?:signs?|events?|conditions?)\b.{0,48}\b(?:before|preceding|prior\s+to)\b.{0,32}\b(?:appearance|reappearance|advent|rise|emergence)\b/i.test(normalized)
+    || /(?:علامات|أحداث).{0,30}(?:قبل|تسبق).{0,24}(?:الظهور|الخروج)/u.test(original);
+  const facet = signsBeforeAppearance
+    ? RETRIEVAL_FACETS.find((candidate) => candidate.name === "signs-events")
+    : RETRIEVAL_FACETS.find((candidate) => (
+      candidate.pattern.test(normalized) || candidate.scriptPattern.test(original)
+    )) || null;
+  const entity = entityExpansion(original, normalized);
+  const expansionParts = [original, entity.text];
+
+  return {
+    searchQuery: expansionParts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim(),
+    entityDetected: entity.detected,
+    retrievalProfile: {
+      version: 1,
+      facet: facet?.name || "general",
+      strictFacet: Boolean(facet?.strict),
+      requiredTerms: facet?.strict ? facet.terms : [],
+      boostTerms: facet?.terms || [],
+      entityTerms: entity.terms,
+      resultLimit: facet?.resultLimit || 8,
+      seedLimit: 12,
+      seedCount: 6,
+      candidateLimit: 300,
+      expandedLimit: 420,
+      perSeed: 26,
+      maxDirectResults: facet?.maxDirectResults || 5,
+      maxPerChapter: facet?.maxPerChapter || 3,
+      disableFocus: Boolean(facet?.disableFocus),
+      secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
+      directFloorRatio: facet?.directFloorRatio || 0.46,
+      relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
+    },
+  };
 }
 
 function shouldRetrieveNarrations(query) {
@@ -117,13 +239,13 @@ export function resolveLocalConversation(query, conversation, globalMemory) {
     || detectedLanguage;
   const memoryUpdate = extractMemory(query)
     || (switchedLanguage ? { key: "language", value: switchedLanguage } : null);
-  const expanded = expandedReligiousQuery(query);
-
-  if (expanded || shouldRetrieveNarrations(query)) {
+  const religiousSearch = buildReligiousSearchPlan(query);
+  if (religiousSearch.entityDetected || shouldRetrieveNarrations(query)) {
     return {
       intent: "religious-search",
       language,
-      searchQuery: expanded || String(query || "").trim(),
+      searchQuery: religiousSearch.searchQuery,
+      retrievalProfile: religiousSearch.retrievalProfile,
       memoryUpdate,
     };
   }

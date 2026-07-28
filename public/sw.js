@@ -47,7 +47,7 @@
 //       }),
 //   );
 // });
-const CACHE_NAME = "al-faqih-shell-v14";
+const CACHE_NAME = "al-faqih-shell-v15";
 const CORE = [
   "/logo.png",
   "/sidebar.png",

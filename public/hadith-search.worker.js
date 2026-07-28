@@ -492,7 +492,7 @@ async function loadCandidateRecords(candidates) {
   return records;
 }
 
-async function search({ requestId, query, filters }) {
+async function search({ requestId, query, filters, retrievalProfile }) {
   if (!ready) await initialize();
   const parsed = parseInlineFilters(query, filters);
   self.postMessage({ type: "status", requestId, message: "Finding the closest narration passages" });
@@ -505,7 +505,8 @@ async function search({ requestId, query, filters }) {
     passageLengths,
     query: parsed.cleanQuery,
     filters: parsed.filters,
-    limit: 240,
+    retrievalProfile,
+    limit: Math.max(120, Math.min(480, Number(retrievalProfile?.candidateLimit) || 300)),
   });
   self.postMessage({
     type: "status",
@@ -518,8 +519,8 @@ async function search({ requestId, query, filters }) {
     plan,
     candidates,
     records: directRecords,
-    resultLimit: 8,
-  }).slice(0, 4);
+    resultLimit: Math.max(6, Math.min(16, Number(retrievalProfile?.seedLimit) || 12)),
+  }).slice(0, Math.max(3, Math.min(8, Number(retrievalProfile?.seedCount) || 6)));
 
   self.postMessage({
     type: "status",
@@ -531,8 +532,8 @@ async function search({ requestId, query, filters }) {
     candidates,
     seedResults,
     filters: parsed.filters,
-    limit: 320,
-    perSeed: 18,
+    limit: Math.max(240, Math.min(640, Number(retrievalProfile?.expandedLimit) || 420)),
+    perSeed: Math.max(12, Math.min(48, Number(retrievalProfile?.perSeed) || 26)),
   });
   const records = await loadCandidateRecords(expandedCandidates);
   const results = rerankLoadedRecords({
@@ -540,7 +541,7 @@ async function search({ requestId, query, filters }) {
     plan,
     candidates: expandedCandidates,
     records,
-    resultLimit: 5,
+    resultLimit: Math.max(3, Math.min(12, Number(retrievalProfile?.resultLimit) || 8)),
   });
   self.postMessage({
     type: "results",
@@ -550,6 +551,7 @@ async function search({ requestId, query, filters }) {
     expandedCandidateCount: expandedCandidates.length,
     elapsedMs: Math.round(performance.now() - started),
     appliedFilters: parsed.filters,
+    retrievalProfile: retrievalProfile || null,
   });
 }
 
