@@ -104,17 +104,18 @@ function resultSource(result, index) {
     `Collection: ${result.collection}`,
     `Link: ${result.link || "not supplied"}`,
     `Retrieval relation: ${(result.strategies || []).join(", ") || "direct"}`,
-    compact(result.text, 1800),
+    `Report family role: ${result.clusterRole === "parallel" ? `parallel transmission of ${result.clusterId || result.familyRoot}` : `distinct anchor ${result.clusterId || result.id}`}`,
+    compact(result.text, 2100),
   ].join("\n");
 }
 
 export function synthesisMessages(query, results) {
-  const sources = results.slice(0, 6).map(resultSource).join("\n\n---\n\n");
+  const sources = results.slice(0, 10).map(resultSource).join("\n\n---\n\n");
   return [
     {
       role: "system",
       content: `${BASE_SYSTEM}
-You are given retrieved narrations. Answer only from those narrations. Do not add a ruling from memory. Separate what a report explicitly states from what follows by contextual interpretation. If reports are parallel versions of one event, say so. If the evidence does not fully answer the user's practical question, state the gap plainly. Do not discuss chain grading unless the supplied text does. Use these headings: Direct answer, How the reports fit together, Limits of the evidence. Keep each section concise, but include distinct relevant reports rather than collapsing every narration into one sentence. Do not copy the same sentence or translation more than once. Do not repeat the question. If the question asks who a person is, answer identity and role before mentioning secondary details.`,
+You are given retrieved narrations. Answer only from those narrations. Do not add a ruling from memory. Separate what a report explicitly states from what follows by contextual interpretation. If reports are parallel versions of one event, explicitly identify them as separate witnesses of the same core report, name their collections, and note meaningful wording differences without counting them as unrelated events. If the evidence does not fully answer the user's practical question, state the gap plainly. Do not discuss chain grading unless the supplied text does. Use these headings: Direct answer, How the reports fit together, Limits of the evidence. Keep each section concise, but include distinct relevant reports rather than collapsing every narration into one sentence. Do not copy the same sentence or translation more than once. Do not repeat the question. If the question asks who a person is, answer identity and role before mentioning secondary details.`,
     },
     {
       role: "user",

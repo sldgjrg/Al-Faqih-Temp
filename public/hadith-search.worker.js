@@ -514,13 +514,18 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     message: `Checking the best ${candidates.length} narrations for direct evidence`,
   });
   const directRecords = await loadCandidateRecords(candidates);
-  const seedResults = rerankLoadedRecords({
+  const seedPool = rerankLoadedRecords({
     manifest,
     plan,
     candidates,
     records: directRecords,
     resultLimit: Math.max(6, Math.min(16, Number(retrievalProfile?.seedLimit) || 12)),
-  }).slice(0, Math.max(3, Math.min(8, Number(retrievalProfile?.seedCount) || 6)));
+  });
+  const seedCount = Math.max(3, Math.min(10, Number(retrievalProfile?.seedCount) || 8));
+  const seedResults = [
+    ...seedPool.filter((result) => result.clusterRole !== "parallel"),
+    ...seedPool.filter((result) => result.clusterRole === "parallel"),
+  ].slice(0, seedCount);
 
   self.postMessage({
     type: "status",
@@ -533,7 +538,9 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     seedResults,
     filters: parsed.filters,
     limit: Math.max(240, Math.min(640, Number(retrievalProfile?.expandedLimit) || 420)),
-    perSeed: Math.max(12, Math.min(48, Number(retrievalProfile?.perSeed) || 26)),
+    perSeed: Math.max(12, Math.min(64, Number(retrievalProfile?.perSeed) || 32)),
+    maxDepth: Math.max(1, Math.min(3, Number(retrievalProfile?.familyDepth) || 2)),
+    propagationThreshold: Math.max(0.35, Math.min(0.8, Number(retrievalProfile?.familyPropagationThreshold) || 0.48)),
   });
   const records = await loadCandidateRecords(expandedCandidates);
   const results = rerankLoadedRecords({
@@ -541,12 +548,17 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     plan,
     candidates: expandedCandidates,
     records,
-    resultLimit: Math.max(3, Math.min(12, Number(retrievalProfile?.resultLimit) || 8)),
+    resultLimit: Math.max(4, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
   });
+  const anchors = results.filter((result) => result.clusterRole !== "parallel");
+  const parallels = results.filter((result) => result.clusterRole === "parallel");
+  const synthesisResults = [...anchors, ...parallels].slice(0, 8);
   self.postMessage({
     type: "results",
     requestId,
     results,
+    synthesisResults,
+    clusterCount: new Set(results.map((result) => result.clusterId || result.id)).size,
     candidateCount: candidates.length,
     expandedCandidateCount: expandedCandidates.length,
     elapsedMs: Math.round(performance.now() - started),

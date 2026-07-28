@@ -621,6 +621,12 @@
  * query-specific intent rules or narration IDs.
  */
 
+/*
+ * Shared retrieval primitives for the index builder, browser worker, and
+ * regression suite.  The ranker deliberately uses corpus evidence rather than
+ * query-specific intent rules or narration IDs.
+ */
+
 export const PASSAGE_SIZE = 64;
 export const PASSAGE_STRIDE = 48;
 export const PASSAGE_SLOTS = 80;
@@ -1103,21 +1109,43 @@ export function expandRelatedCandidates({
   filters,
   limit = 320,
   perSeed = 18,
+  maxDepth = 2,
+  propagationThreshold = 0.48,
 }) {
   const combined = new Map(candidates.map((candidate) => [candidate.id, { ...candidate }]));
-  for (let seedIndex = 0; seedIndex < seedResults.length; seedIndex += 1) {
-    const seed = seedResults[seedIndex];
-    const links = manifest.related?.[seed.id] || [];
+  const queue = seedResults.map((seed, seedIndex) => ({
+    id: seed.id,
+    rootId: seed.id,
+    parentId: null,
+    seedScore: seed.score || 0.5,
+    pathScore: 1,
+    depth: 0,
+    seedIndex,
+  }));
+  const bestPath = new Map(queue.map((entry) => [`${entry.rootId}:${entry.id}`, 1]));
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (current.depth >= maxDepth) continue;
+    const links = manifest.related?.[current.id] || [];
     for (const [documentId, encodedScore] of links.slice(0, perSeed)) {
       if (!filterMetadata(manifest, documentId, filters)) continue;
-      const relationScore = encodedScore / 255;
-      if (relationScore < 0.22) continue;
+      const edgeScore = encodedScore / 255;
+      if (edgeScore < 0.22 || documentId === current.rootId) continue;
+      const pathScore = Math.min(current.pathScore, edgeScore);
+      const depth = current.depth + 1;
+      const relationCandidateScore = current.seedScore * 0.78
+        + pathScore * 1.28
+        - current.seedIndex * 0.025
+        - (depth - 1) * 0.055;
       const known = combined.get(documentId);
-      const relationCandidateScore = (seed.score || 0.5) * 0.8 + relationScore * 1.2 - seedIndex * 0.03;
       if (known) {
-        if (relationScore > (known.relationScore || 0)) {
-          known.relationScore = relationScore;
-          known.relationTo = seed.id;
+        if (pathScore > (known.familyScore || 0)) {
+          known.familyScore = pathScore;
+          known.familyRoot = current.rootId;
+          known.familyDepth = depth;
+          known.relationScore = Math.max(known.relationScore || 0, edgeScore);
+          known.relationTo = current.id;
         }
         known.candidateScore = Math.max(known.candidateScore || 0, relationCandidateScore);
       } else {
@@ -1129,8 +1157,25 @@ export function expandRelatedCandidates({
           phraseMatches: 0,
           crossLanguageMatches: 0,
           candidateScore: relationCandidateScore,
-          relationScore,
-          relationTo: seed.id,
+          relationScore: edgeScore,
+          relationTo: current.id,
+          familyRoot: current.rootId,
+          familyDepth: depth,
+          familyScore: pathScore,
+        });
+      }
+
+      const pathKey = `${current.rootId}:${documentId}`;
+      if (depth < maxDepth && edgeScore >= propagationThreshold && pathScore > (bestPath.get(pathKey) || 0)) {
+        bestPath.set(pathKey, pathScore);
+        queue.push({
+          id: documentId,
+          rootId: current.rootId,
+          parentId: current.id,
+          seedScore: current.seedScore,
+          pathScore,
+          depth,
+          seedIndex: current.seedIndex,
         });
       }
     }
@@ -1289,6 +1334,205 @@ function overlapRatio(leftTokens, rightTokens) {
   return union ? intersection / union : 0;
 }
 
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(minimum, Math.min(maximum, numeric));
+}
+
+function buildNarrationClusters(results, profile = {}) {
+  const relationThreshold = clampNumber(profile.familyMinRelation, 0.32, 0.92, 0.48);
+  const overlapThreshold = clampNumber(profile.clusterOverlapThreshold, 0.56, 0.94, 0.72);
+  const sameChapterOverlapThreshold = clampNumber(
+    profile.sameChapterOverlapThreshold,
+    0.42,
+    overlapThreshold,
+    0.56,
+  );
+  const parent = new Map(results.map((result) => [result.id, result.id]));
+  const byId = new Map(results.map((result) => [result.id, result]));
+
+  const find = (id) => {
+    let root = parent.get(id);
+    while (root !== parent.get(root)) root = parent.get(root);
+    let cursor = id;
+    while (cursor !== root) {
+      const next = parent.get(cursor);
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+
+  const union = (leftId, rightId) => {
+    if (!parent.has(leftId) || !parent.has(rightId)) return;
+    const leftRoot = find(leftId);
+    const rightRoot = find(rightId);
+    if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+  };
+
+  const familyRepresentatives = new Map();
+  for (const result of results) {
+    const familyStrength = result.familyScore || result.relationScore || 0;
+    if (result.familyRoot != null && familyStrength >= relationThreshold) {
+      const representative = familyRepresentatives.get(result.familyRoot);
+      if (representative != null) union(result.id, representative);
+      else familyRepresentatives.set(result.familyRoot, result.id);
+      if (byId.has(result.familyRoot)) union(result.id, result.familyRoot);
+      continue;
+    }
+    if (
+      result.relatedTo != null
+      && byId.has(result.relatedTo)
+      && familyStrength >= relationThreshold
+    ) {
+      union(result.id, result.relatedTo);
+    }
+  }
+
+  // The graph catches most published parallels. Token overlap catches the same
+  // report when two editions or translations were not connected at build time.
+  const comparisonPool = results.slice(0, Math.min(results.length, 96));
+  for (let leftIndex = 0; leftIndex < comparisonPool.length; leftIndex += 1) {
+    const left = comparisonPool[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < comparisonPool.length; rightIndex += 1) {
+      const right = comparisonPool[rightIndex];
+      const sameChapter = normalizeText(`${left.collection} ${left.chapter}`)
+        === normalizeText(`${right.collection} ${right.chapter}`);
+      const overlap = overlapRatio(left._tokens, right._tokens);
+      if (overlap >= overlapThreshold || (sameChapter && overlap >= sameChapterOverlapThreshold)) {
+        union(left.id, right.id);
+      }
+    }
+  }
+
+  const grouped = new Map();
+  for (const result of results) {
+    const root = find(result.id);
+    if (!grouped.has(root)) grouped.set(root, []);
+    grouped.get(root).push(result);
+  }
+
+  return [...grouped.values()]
+    .map((members) => {
+      members.sort((left, right) => right.rawScore - left.rawScore);
+      const anchor = members[0];
+      return {
+        anchor,
+        members,
+        score: anchor.rawScore,
+        collections: new Set(members.map((member) => member.collection)),
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+}
+
+export function selectClusteredResults(eligible, plan, resultLimit) {
+  if (!eligible.length || resultLimit <= 0) return [];
+  const profile = plan.retrievalProfile || {};
+  const clusters = buildNarrationClusters(eligible, profile);
+  if (!clusters.length) return [];
+
+  const topScore = clusters[0].score || 1;
+  const uniqueFloorRatio = clampNumber(profile.uniqueFloorRatio, 0.24, 0.8, 0.38);
+  const strongClusters = clusters.filter((cluster) => cluster.score >= Math.max(0.11, topScore * uniqueFloorRatio));
+  const availableClusters = strongClusters.length ? strongClusters : clusters.slice(0, 1);
+
+  const minimumUnique = Math.min(
+    availableClusters.length,
+    Math.max(1, Math.round(clampNumber(profile.minUniqueResults, 1, resultLimit, resultLimit >= 8 ? 3 : 2))),
+  );
+  const maximumUnique = Math.min(
+    availableClusters.length,
+    Math.max(minimumUnique, Math.round(clampNumber(profile.maxUniqueResults, 1, resultLimit, Math.ceil(resultLimit * 0.72)))),
+  );
+  const clustersWithParallels = availableClusters.filter((cluster) => cluster.members.length > 1).length;
+  const parallelReserve = Math.min(
+    resultLimit - 1,
+    Math.max(
+      clustersWithParallels ? 1 : 0,
+      Math.round(clampNumber(profile.parallelReserve, 0, resultLimit - 1, resultLimit * 0.36)),
+    ),
+  );
+  const idealUnique = Math.max(minimumUnique, Math.min(maximumUnique, resultLimit - parallelReserve));
+  const selectedClusters = availableClusters.slice(0, idealUnique);
+
+  const chosenByCluster = new Map(selectedClusters.map((cluster) => [cluster.anchor.id, [cluster.anchor]]));
+  let slotsRemaining = resultLimit - selectedClusters.length;
+  const maxParallelPerCluster = Math.max(
+    1,
+    Math.round(clampNumber(profile.maxFamilyMembers, 1, resultLimit, 4)) - 1,
+  );
+
+  // Give the strongest clusters one parallel at a time. This prevents one very
+  // repetitive transmission family from crowding out every distinct report.
+  let parallelRound = 1;
+  while (slotsRemaining > 0) {
+    let addedThisRound = false;
+    for (const cluster of selectedClusters) {
+      if (slotsRemaining <= 0) break;
+      if (parallelRound > maxParallelPerCluster) continue;
+      const candidate = cluster.members[parallelRound];
+      if (!candidate) continue;
+      chosenByCluster.get(cluster.anchor.id).push(candidate);
+      slotsRemaining -= 1;
+      addedThisRound = true;
+    }
+    if (!addedThisRound) break;
+    parallelRound += 1;
+  }
+
+  // When the chosen clusters do not have enough parallel transmissions, spend
+  // the remaining budget on additional distinct narrations.
+  let nextClusterIndex = selectedClusters.length;
+  while (slotsRemaining > 0 && nextClusterIndex < availableClusters.length) {
+    const cluster = availableClusters[nextClusterIndex++];
+    selectedClusters.push(cluster);
+    chosenByCluster.set(cluster.anchor.id, [cluster.anchor]);
+    slotsRemaining -= 1;
+  }
+
+  // If the corpus is dominated by one or two genuinely parallel families, fill
+  // the last slots from those families instead of returning an artificially
+  // short list.
+  if (slotsRemaining > 0) {
+    const overflow = [];
+    for (const cluster of selectedClusters) {
+      const alreadyChosen = chosenByCluster.get(cluster.anchor.id)?.length || 0;
+      for (const member of cluster.members.slice(alreadyChosen)) {
+        overflow.push({ cluster, member });
+      }
+    }
+    overflow.sort((left, right) => (
+      right.member.rawScore - left.member.rawScore
+      || (right.member.relationScore || 0) - (left.member.relationScore || 0)
+    ));
+    for (const { cluster, member } of overflow) {
+      if (slotsRemaining <= 0) break;
+      chosenByCluster.get(cluster.anchor.id).push(member);
+      slotsRemaining -= 1;
+    }
+  }
+
+  const selected = [];
+  selectedClusters.forEach((cluster, clusterIndex) => {
+    const chosen = chosenByCluster.get(cluster.anchor.id) || [];
+    chosen.forEach((result, memberIndex) => {
+      selected.push({
+        ...result,
+        clusterId: `narration-${cluster.anchor.id}`,
+        clusterRole: memberIndex === 0 ? "anchor" : "parallel",
+        clusterRank: clusterIndex + 1,
+        clusterSize: cluster.members.length,
+        selectedClusterSize: chosen.length,
+        parallelTo: memberIndex === 0 ? null : cluster.anchor.id,
+      });
+    });
+  });
+  return selected.slice(0, resultLimit);
+}
+
 export function rerankLoadedRecords({
   manifest,
   plan,
@@ -1353,7 +1597,8 @@ export function rerankLoadedRecords({
         ? Math.min(0.14, evidence.phraseEvidence * 0.42)
         : 0;
       const relationScore = candidate.relationScore || 0;
-      const relationBoost = relationScore >= 0.22 ? Math.min(0.3, relationScore * 0.3) : 0;
+      const familyScore = candidate.familyScore || relationScore;
+      const relationBoost = familyScore >= 0.22 ? Math.min(0.34, familyScore * 0.34) : 0;
       const directScore = evidence.coverage * 0.42
         + evidence.phraseEvidence * 0.3
         + evidence.density * 0.1
@@ -1372,6 +1617,7 @@ export function rerankLoadedRecords({
       if (evidence.crossLanguage) strategies.push("cross-language");
       if (titleEvidence.coverage > 0.1) strategies.push("heading");
       if (relationScore >= 0.22) strategies.push("parallel-report");
+      if (candidate.familyRoot !== undefined && candidate.familyRoot !== null) strategies.push("report-family");
       if (facetMatched && plan.retrievalProfile?.facet && plan.retrievalProfile.facet !== "general") {
         strategies.push(`intent-${plan.retrievalProfile.facet}`);
       }
@@ -1380,6 +1626,9 @@ export function rerankLoadedRecords({
         rawScore,
         directScore,
         relationScore,
+        familyScore,
+        familyRoot: candidate.familyRoot ?? null,
+        familyDepth: candidate.familyDepth || 0,
         relatedTo: candidate.relationTo ?? null,
         score: Math.max(0.01, Math.min(0.99, rawScore)),
         title,
@@ -1412,8 +1661,8 @@ export function rerankLoadedRecords({
     .filter(Boolean)
     .filter((result) => (
       result._matchedSources > 0
-      && (result.relationScore < 0.42 || result._coverage >= 0.3 || result._titleCoverage >= 0.12)
-      && (result._focusMatched || result.relationScore >= 0.75)
+      && (result.familyScore < 0.42 || result._coverage >= 0.22 || result._titleCoverage >= 0.08 || result.familyScore >= 0.56)
+      && (result._focusMatched || result.familyScore >= 0.56)
       && (!plan.retrievalProfile?.strictFacet
         || (result._facetMatched && result._facetEntityProximity))
     ))
@@ -1426,39 +1675,12 @@ export function rerankLoadedRecords({
   const directFloor = Math.max(0.12, topScore * directFloorRatio);
   const relatedFloor = Math.max(0.11, topScore * relatedFloorRatio);
   const eligible = ranked.filter((result) => (
-    result.relationScore >= 0.22
+    result.familyScore >= 0.22
       ? result.rawScore >= relatedFloor
       : result.rawScore >= directFloor
   ));
 
-  const selected = [];
-  const chapterCounts = new Map();
-  const shortQuery = plan.uniqueTokens.length <= 2;
-  const maxDirectResults = Math.max(1, Math.min(
-    resultLimit,
-    Number(plan.retrievalProfile?.maxDirectResults)
-      || (plan.focusSourceHash ? 1 : shortQuery ? 1 : plan.uniqueTokens.length >= 5 ? 3 : resultLimit),
-  ));
-  const maxPerChapter = Math.max(1, Number(plan.retrievalProfile?.maxPerChapter) || 2);
-  const topPhraseEvidence = eligible[0]?._phraseEvidence || 0;
-  const phraseFloor = topPhraseEvidence >= 0.12 ? Math.max(0.06, topPhraseEvidence * 0.35) : 0;
-  let nonParallelCount = 0;
-  for (const result of eligible) {
-    const chapterKey = normalizeText(`${result.collection} ${result.chapter}`);
-    const isParallel = selected.length > 0 && result.relationScore >= 0.22;
-    if (!isParallel && (chapterCounts.get(chapterKey) || 0) >= maxPerChapter) continue;
-    if (!isParallel && nonParallelCount >= maxDirectResults) continue;
-    if (!isParallel && selected.length > 0) {
-      const secondaryDirectRatio = Math.max(0.45, Math.min(0.9, Number(plan.retrievalProfile?.secondaryDirectRatio) || 0.62));
-      if (result.rawScore < topScore * secondaryDirectRatio) continue;
-    }
-    if (!isParallel && phraseFloor && result._phraseEvidence < phraseFloor) continue;
-    if (selected.some((known) => overlapRatio(known._tokens, result._tokens) > 0.985)) continue;
-    selected.push(result);
-    if (!isParallel) nonParallelCount += 1;
-    chapterCounts.set(chapterKey, (chapterCounts.get(chapterKey) || 0) + 1);
-    if (selected.length === resultLimit) break;
-  }
+  const selected = selectClusteredResults(eligible, plan, resultLimit);
 
   const best = selected[0]?.rawScore || 1;
   return selected.map(({
