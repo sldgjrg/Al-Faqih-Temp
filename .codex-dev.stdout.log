@@ -1,0 +1,26 @@
+
+> faqih-frontend@0.1.0 predev
+> npm run clean:dev && npm run index:hadith
+
+
+> faqih-frontend@0.1.0 clean:dev
+> node scripts/clean-next-cache.mjs
+
+Cleared stale Next.js development artifacts.
+
+> faqih-frontend@0.1.0 index:hadith
+> node scripts/build-local-hadith-index.mjs
+
+Parsing 22,002 narrations...
+Local index local-rag-v11-22002-155murc written to C:\Users\Hurr\Downloads\Al-Faqih-master\public\hadith-data
+172 shards, 192 dense dimensions, 96 lexical slots
+
+> faqih-frontend@0.1.0 dev
+> next dev
+
+   ▲ Next.js 15.1.7
+   - Local:        http://localhost:3001
+   - Network:      http://192.168.56.1:3001
+
+ ✓ Starting...
+ ✓ Ready in 953ms

@@ -313,7 +313,12 @@ function ResultCard({ result, index }) {
             <strong>{displayTitle}</strong>
             <span>{result.collection} · {result.author}</span>
           </span>
-          <span className="result-score">{Math.max(1, Math.min(99, Math.round(result.score * 100)))}%</span>
+          <span
+            className="result-score"
+            title="Relative retrieval relevance; this is not an authenticity grade or legal confidence."
+          >
+            {Math.max(1, Math.min(99, Math.round(result.score * 100)))}%
+          </span>
         </summary>
         <div className="result-detail">
           <div className="result-tags">
@@ -336,10 +341,13 @@ function ResultCard({ result, index }) {
 }
 
 function ElucidationMessage({ elucidation }) {
+  if (elucidation.end) {
+    return <div className="conversation-response">{elucidation.message}</div>;
+  }
   return (
     <article className="elucidation-card">
       <header>
-        <span>Elucidation</span>
+        <span>Elucidation · {elucidation.position} of {elucidation.total}</span>
         <h3>{cleanCorpusDisplay(elucidation.title)}</h3>
         <p>{elucidation.collection} · {elucidation.author}</p>
       </header>
@@ -362,27 +370,20 @@ function ElucidationMessage({ elucidation }) {
       </section>
 
       {(elucidation.parallel.arabic || elucidation.parallel.english) && (
-        <section className="parallel-text">
-          <div>
-            <span>Original Arabic</span>
-            <p dir="rtl" lang="ar">{elucidation.parallel.arabic || "Arabic text unavailable in this record."}</p>
-          </div>
-          <div>
-            <span>Published translation</span>
-            <p>{elucidation.parallel.english}</p>
-          </div>
-        </section>
+        <details className="source-text-details">
+          <summary>View source wording</summary>
+          <section className="parallel-text">
+            <div>
+              <span>Original Arabic</span>
+              <p dir="rtl" lang="ar">{elucidation.parallel.arabic || "Arabic text unavailable in this record."}</p>
+            </div>
+            <div>
+              <span>Published translation</span>
+              <p>{elucidation.parallel.english}</p>
+            </div>
+          </section>
+        </details>
       )}
-
-      <div className="structure-label">Text structure</div>
-      <section className="elucidation-meaning">
-        {elucidation.clauses.map((clause, index) => (
-          <div key={`${clause.role}-${index}`}>
-            <span>{clause.role}</span>
-            <p>{clause.text}</p>
-          </div>
-        ))}
-      </section>
 
       {elucidation.phrase && (
         <section className="phrase-analysis">
@@ -413,6 +414,11 @@ function ElucidationMessage({ elucidation }) {
       )}
 
       {elucidation.link && <a className="elucidation-source" href={elucidation.link} target="_blank" rel="noreferrer">Source</a>}
+      <div className="elucidation-followup">
+        {elucidation.hasNext
+          ? "Would you like me to explain the next narration?"
+          : "That was the last narration in this result set."}
+      </div>
     </article>
   );
 }
@@ -533,13 +539,30 @@ export default function LocalHadithChat() {
   }, [conversations, currentId, globalMemory, historyLoaded]);
 
   useEffect(() => {
-    const worker = new Worker(new URL("../workers/hadith-worker-entry.js", import.meta.url));
+    // Load the shared retrieval module directly so build-time regression tests
+    // and the browser use the same tokenizer and scorer.
+    let worker;
+    try {
+      worker = new Worker("/hadith-search.worker.js", { name: "hadith-search", type: "module" });
+    } catch (error) {
+      setEngineError(error instanceof Error ? error.message : "Could not start local search");
+      setEngineStatus("");
+      return undefined;
+    }
     workerRef.current = worker;
+    worker.onerror = (event) => {
+      setEngineError(event.message || "Could not start local search");
+      setEngineStatus("");
+    };
+    worker.onmessageerror = () => {
+      setEngineError("The local search worker returned an unreadable response");
+      setEngineStatus("");
+    };
     worker.onmessage = ({ data }) => {
       if (data.type === "ready") {
         setManifest(data.manifest);
         setEngineError("");
-        setEngineStatus(data.manifest.mode === "hybrid" ? "Dense + keyword index ready" : "Keyword index loading");
+        setEngineStatus("Passage retrieval index ready");
       }
       if (data.type === "status" && !data.requestId) setEngineStatus(data.message);
       if (data.type === "status" && data.requestId) {
@@ -578,6 +601,7 @@ export default function LocalHadithChat() {
         if (!data.requestId) {
           setEngineError(data.message);
           setEngineStatus("");
+          setDownload((value) => ({ ...value, active: false }));
         }
         const conversationId = pendingRef.current.get(data.requestId)?.conversationId;
         pendingRef.current.delete(data.requestId);
@@ -595,8 +619,21 @@ export default function LocalHadithChat() {
       }
     };
     worker.postMessage({ type: "init" });
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-    return () => worker.terminate();
+    if ("serviceWorker" in navigator) {
+      if (process.env.NODE_ENV === "production") {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      } else {
+        // A production service worker from an earlier localhost session must
+        // never cache or serve Next's changing development/HMR chunks.
+        navigator.serviceWorker.getRegistrations()
+          .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+          .catch(() => {});
+      }
+    }
+    return () => {
+      workerRef.current = null;
+      worker.terminate();
+    };
   }, []);
 
   useEffect(() => {
@@ -624,7 +661,7 @@ export default function LocalHadithChat() {
     });
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     const query = input.trim();
     if (!query || !current) return;
     const userMessage = { id: crypto.randomUUID(), role: "user", text: query };
@@ -651,6 +688,44 @@ export default function LocalHadithChat() {
     if (localResponse) {
       if (localResponse.memoryUpdate) {
         setGlobalMemory((memory) => applyMemoryUpdate(memory, localResponse.memoryUpdate, current.id));
+      }
+      const localMessageId = crypto.randomUUID();
+      if (localResponse.intent === "local-llm") {
+        setConversations((items) => items.map((conversation) =>
+          conversation.id === current.id
+            ? {
+                ...conversation,
+                title: generateConversationTitle(conversation, query),
+                memory: updateConversationMemory(conversation, query, localResponse.intent, localResponse.language),
+                messages: [...conversation.messages, userMessage, { id: localMessageId, role: "assistant", loading: true, status: "Asking the local model" }],
+              }
+            : conversation));
+        setInput("");
+        try {
+          const response = await fetch("/api/local-chat", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              query,
+              history: current.messages.map((message) => ({
+                role: message.role,
+                content: message.text || message.conversation?.text || "",
+              })).filter((message) => message.content),
+            }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload.text) throw new Error(payload.error || "Local model unavailable");
+          setConversations((items) => items.map((conversation) =>
+            conversation.id === current.id
+              ? { ...conversation, messages: conversation.messages.map((message) => message.id === localMessageId ? { id: localMessageId, role: "assistant", conversation: { intent: "local-llm", language: localResponse.language, text: payload.text } } : message) }
+              : conversation));
+        } catch {
+          setConversations((items) => items.map((conversation) =>
+            conversation.id === current.id
+              ? { ...conversation, messages: conversation.messages.map((message) => message.id === localMessageId ? { id: localMessageId, role: "assistant", conversation: { intent: "conversation", language: localResponse.language, text: localResponse.fallbackText || localResponse.text } } : message) }
+              : conversation));
+        }
+        return;
       }
       setConversations((items) => items.map((conversation) =>
         conversation.id === current.id

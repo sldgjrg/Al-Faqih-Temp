@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "npm run index:hadith",
-    "dev": "next dev --turbopack",
+    "predev": "npm run clean:dev && npm run index:hadith",
+    "dev": "next dev",
+    "dev:turbo": "next dev --turbopack",
+    "clean:dev": "node scripts/clean-next-cache.mjs",
     "index:hadith": "node scripts/build-local-hadith-index.mjs",
+    "test:retrieval": "node scripts/smoke-local-retrieval.mjs --assert",
     "prebuild": "npm run index:hadith",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src scripts/*.mjs public/hadith-search.worker.js"
+    "lint": "eslint src scripts/*.mjs public/*.mjs public/hadith-search.worker.js"
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^6.7.2",

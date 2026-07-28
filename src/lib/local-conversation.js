@@ -4,83 +4,16 @@ const ENGLISH_STOP_WORDS = new Set(
   "a about an and are as at be can could did do does for from had has have how i if in into is it me my of on or please tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
 );
 
-const RELIGIOUS_TERMS = /\b(hadith|ahadith|riwaya|riwayat|imam|sadiq|baqir|ali|hussain|husayn|mahdi|wudu|wudhu|wuzu|ablution|well|bir|kuan|kuaa|khooh|dog|kalb|kutta|kutte|water|pani|prayer|pray|salah|salat|namaz|fast|sawm|zakat|khums|nikah|talaq|taqiyya|taqiyyah|halal|haram|najis|tahir|purity|quran|allah|prophet|narration|fatwa)\b/i;
-const RELIGIOUS_SCRIPT_TERMS = /(?:حدیث|حديث|روایت|رواية|امام|وضو|وضوء|بئر|کنواں|کھوہ|کتا|كلب|پانی|ماء|نماز|صلاة|زکات|زكاة|خمس|نکاح|نكاح|تقیہ|تقية|قرآن|الله)/u;
 const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
 
-const RESPONSES = {
-  english: {
-    greeting: (name) => `Hello${name ? `, ${name}` : ""}. What would you like to discuss?`,
-    wellbeing: "I am ready and listening. How can I help?",
-    thanks: "You are welcome.",
-    farewell: "Take care. Your conversations and remembered preferences will remain on this device.",
-    identity: "I am Al-Faqih, an entirely on-device hadith research and conversation assistant.",
-    capability: "I can converse in several languages, remember explicit preferences on this device, retrieve narrations, follow references such as “the first one,” and elucidate Arabic wording in context.",
-    general: "I can keep this in our conversation, but my factual library in this fully offline build is the local hadith corpus. I will not turn an unrelated prompt into a random hadith search.",
-    remembered: "I will remember that on this device.",
-    noMemory: "You have not asked me to remember anything across chats yet.",
-  },
-  romanUrdu: {
-    greeting: (name) => `Assalamu alaykum${name ? `, ${name}` : ""}. Aap kis bare mein baat karna chahte hain?`,
-    wellbeing: "Main tayyar hoon. Aap batayein, main kis tarah madad karun?",
-    thanks: "Khushi hui. Aap ka shukriya.",
-    farewell: "Allah hafiz. Aap ki yaad rakhi hui maloomat isi device par rahegi.",
-    identity: "Main Al-Faqih hoon, ek mukammal on-device hadith research aur conversation assistant.",
-    capability: "Main kai zabanon mein baat, riwayat retrieve, pehli ya doosri riwayat ka hawala samajh, aur Arabi ibarat ki wazahat kar sakta hoon.",
-    general: "Main is baat ko hamari guftagu ke context mein rakh sakta hoon, lekin is offline build ki factual library local hadith corpus hai. Main ghair mutaliq sawal par random riwayat nahi dikhaunga.",
-    remembered: "Theek hai, main is baat ko isi device par yaad rakhunga.",
-    noMemory: "Abhi aap ne mujhe chats ke darmiyan yaad rakhne ke liye koi baat nahi batayi.",
-  },
-  romanPunjabi: {
-    greeting: (name) => `Assalamu alaykum${name ? `, ${name}` : ""}. Tusi kis gall bare gal karni ae?`,
-    wellbeing: "Main tayyar aan. Dasso, main kiven madad karaan?",
-    thanks: "Ji aayan nu, khushi hoi.",
-    farewell: "Allah hafiz. Yaad rakhi hoi gall ise device te rahegi.",
-    identity: "Main Al-Faqih aan, ik on-device hadith research te conversation assistant.",
-    capability: "Main kai zubanan vich gal, riwayat labh, pichhle natije samajh, te Arabi ibarat di wazahat kar sakda aan.",
-    general: "Main eh gall conversation de context vich rakh sakda aan, par is offline build di factual library local hadith corpus ae. Ghair mutaliq gall te random riwayat nahi vikhavanga.",
-    remembered: "Theek ae, main eh gall ise device te yaad rakhanga.",
-    noMemory: "Hale tusi chats de vichkar yaad rakhan layi koi gall nahi ditti.",
-  },
-  arabic: {
-    greeting: (name) => `السلام عليكم${name ? ` يا ${name}` : ""}. عمّ تريد أن نتحدث؟`,
-    wellbeing: "أنا حاضر ومستعد. كيف أساعدك؟",
-    thanks: "على الرحب والسعة.",
-    farewell: "في أمان الله. ستبقى المعلومات المحفوظة على هذا الجهاز.",
-    identity: "أنا «الفقيه»، مساعد محادثة وبحث حديثي يعمل بالكامل على جهازك.",
-    capability: "أستطيع المحادثة بلغات متعددة، وتذكّر ما تطلب حفظه، واسترجاع الروايات، وشرح ألفاظ النص العربي في سياقها.",
-    general: "أستطيع إبقاء هذا ضمن سياق حديثنا، لكن مكتبتي المعرفية في هذا الإصدار المحلي هي مجموعة الحديث المخزنة على جهازك. لن أحوّل سؤالًا غير متعلق بها إلى روايات عشوائية.",
-    remembered: "حسنًا، سأتذكر ذلك على هذا الجهاز.",
-    noMemory: "لم تطلب مني بعد حفظ شيء بين المحادثات.",
-  },
-  urdu: {
-    greeting: (name) => `السلام علیکم${name ? `، ${name}` : ""}۔ آپ کس موضوع پر بات کرنا چاہتے ہیں؟`,
-    wellbeing: "میں حاضر ہوں۔ بتائیے، میں کیسے مدد کروں؟",
-    thanks: "خوشی ہوئی، آپ کا شکریہ۔",
-    farewell: "اللہ حافظ۔ محفوظ کی گئی معلومات اسی آلے پر رہیں گی۔",
-    identity: "میں الفقیہ ہوں، مکمل طور پر آپ کے آلے پر چلنے والا حدیثی تحقیق اور گفتگو کا معاون۔",
-    capability: "میں متعدد زبانوں میں گفتگو، روایات کی بازیافت، سابقہ نتائج کا حوالہ، اور عربی عبارت کی سیاقی وضاحت کر سکتا ہوں۔",
-    general: "میں اس بات کو ہماری گفتگو کے سیاق میں رکھ سکتا ہوں، لیکن اس مکمل آف لائن نسخے کی معلوماتی لائبریری مقامی حدیثی ذخیرہ ہے۔ میں غیر متعلق سوال پر بے ترتیب روایات نہیں دکھاؤں گا۔",
-    remembered: "ٹھیک ہے، میں یہ بات اسی آلے پر یاد رکھوں گا۔",
-    noMemory: "ابھی آپ نے گفتگوؤں کے درمیان یاد رکھنے کے لیے کوئی بات نہیں بتائی۔",
-  },
-  punjabi: {
-    greeting: (name) => `السلام علیکم${name ? `، ${name}` : ""}۔ تسی کس گل بارے گل کرنا چاندے او؟`,
-    wellbeing: "میں حاضر آں۔ دسو، میں کیویں مدد کراں؟",
-    thanks: "جی آیاں نوں، خوشی ہوئی۔",
-    farewell: "اللہ حافظ۔ یاد رکھی ہوئی گل ایس ڈیوائس تے رہے گی۔",
-    identity: "میں الفقیہ آں، اک مکمل آن ڈیوائس حدیثی تحقیق تے گفتگو دا معاون۔",
-    capability: "میں کئی زباناں وچ گل، روایتاں لبھ، پچھلے نتیجیاں دا حوالہ سمجھ، تے عربی عبارت دی وضاحت کر سکدا آں۔",
-    general: "میں ایہ گل ساڈی گفتگو دے سیاق وچ رکھ سکدا آں، پر ایس آف لائن نسخے دی معلوماتی لائبریری مقامی حدیثی ذخیرہ اے۔ میں غیر متعلق سوال تے بے ترتیب روایتاں نہیں وکھاواں گا۔",
-    remembered: "ٹھیک اے، میں ایہ گل ایس ڈیوائس تے یاد رکھاں گا۔",
-    noMemory: "ہلے تسی چیٹاں دے وچکار یاد رکھن لئی کوئی گل نہیں دسی۔",
-  },
-};
-
 function normalize(value) {
-  return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 export function detectConversationLanguage(query) {
@@ -97,6 +30,18 @@ export function detectConversationLanguage(query) {
   return "english";
 }
 
+function requestedLanguage(query) {
+  const value = normalize(query);
+  if (/\b(?:speak|reply in|talk in)\s+urdu\b/.test(value)) return "romanUrdu";
+  if (/\b(?:speak|reply in|talk in)\s+punjabi\b/.test(value)) return "romanPunjabi";
+  if (/\b(?:speak|reply in|talk in)\s+arabic\b/.test(value)) return "arabic";
+  if (/\b(?:speak|reply in|talk in)\s+english\b/.test(value)) return "english";
+  if (/اردو میں|اردو وچ/u.test(query)) return "urdu";
+  if (/پنجابی میں|پنجابی وچ/u.test(query)) return "punjabi";
+  if (/بالعربية|تكلم العربية/u.test(query)) return "arabic";
+  return "";
+}
+
 function extractMemory(query) {
   const patterns = [
     { key: "name", pattern: /\b(?:my name is|call me)\s+([\p{L}' -]{2,40})[.!]?$/iu },
@@ -107,13 +52,13 @@ function extractMemory(query) {
     { key: "preference", pattern: /\bmujhe\s+(.{2,80})\s+pasand hai\b/iu },
   ];
   for (const { key, pattern } of patterns) {
-    const match = query.match(pattern);
+    const match = String(query || "").match(pattern);
     if (match) return { key, value: match[1].trim().replace(/[.!?]+$/, "") };
   }
-  const explicit = query.match(/\bremember(?: that)?\s+(.{2,160})$/iu)
-    || query.match(/\byaad rakho(?: ke| کہ)?\s+(.{2,160})$/iu)
-    || query.match(/یاد رکھو(?: کہ)?\s+(.{2,160})$/u)
-    || query.match(/تذكّر(?: أن)?\s+(.{2,160})$/u);
+  const explicit = String(query || "").match(/\bremember(?: that)?\s+(.{2,160})$/iu)
+    || String(query || "").match(/\byaad rakho(?: ke| کہ)?\s+(.{2,160})$/iu)
+    || String(query || "").match(/یاد رکھو(?: کہ)?\s+(.{2,160})$/u)
+    || String(query || "").match(/تذكّر(?: أن)?\s+(.{2,160})$/u);
   return explicit ? { key: "fact", value: explicit[1].trim() } : null;
 }
 
@@ -132,91 +77,62 @@ export function applyMemoryUpdate(memory, update, conversationId) {
   return next;
 }
 
-function memorySummary(memory, language) {
-  const entries = [];
-  if (memory?.profile?.name) entries.push(`Name: ${memory.profile.name}`);
-  if (memory?.profile?.preference) entries.push(`Preference: ${memory.profile.preference}`);
-  for (const fact of memory?.facts || []) entries.push(fact.value);
-  if (!entries.length) return RESPONSES[language].noMemory;
-  const heading = {
-    english: "I remember:",
-    romanUrdu: "Mujhe yaad hai:",
-    romanPunjabi: "Mainu yaad ae:",
-    arabic: "أتذكر:",
-    urdu: "مجھے یاد ہے:",
-    punjabi: "مینوں یاد اے:",
-  }[language];
-  return `${heading}\n${entries.map((entry) => `- ${entry}`).join("\n")}`;
-}
+function expandedReligiousQuery(query) {
+  const normalized = normalize(query);
+  const imamZamana = /\b(?:imam(?:-e)?\s+(?:zaman|zamana)|imam\s+of\s+the\s+age|sahib(?:-e|\s+az)?[-\s]?zaman|sahib\s+al[-\s]?zaman)\b/i.test(normalized)
+    || /(?:امام زمان|صاحب الزمان|صاحب العصر)/u.test(query);
+  if (imamZamana) {
+    const appearance = /\b(?:look like|appearance|physical description|describe|hair|face|stature|height)\b/i.test(normalized)
+      || /(?:کیسے دکھتے|حلیہ|صفات ظاہری|كيف يبدو|صفته)/u.test(query);
+    return appearance
+      ? "Imam al-Mahdi al-Qaim Sahib al-Zaman appearance face hair stature physical description"
+      : "Imam al-Mahdi al-Qaim Sahib al-Zaman identity lineage role twelve imams";
+  }
 
-function requestedLanguage(query) {
-  const value = normalize(query);
-  if (/\b(?:speak|reply in|talk in)\s+urdu\b/.test(value)) return "romanUrdu";
-  if (/\b(?:speak|reply in|talk in)\s+punjabi\b/.test(value)) return "romanPunjabi";
-  if (/\b(?:speak|reply in|talk in)\s+arabic\b/.test(value)) return "arabic";
-  if (/\b(?:speak|reply in|talk in)\s+english\b/.test(value)) return "english";
-  if (/اردو میں|اردو وچ/u.test(query)) return "urdu";
-  if (/پنجابی میں|پنجابی وچ/u.test(query)) return "punjabi";
-  if (/بالعربية|تكلم العربية/u.test(query)) return "arabic";
+  const namedImam = normalized.match(/\bwho (?:is|was) imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu)
+    || normalized.match(/\btell me about imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu);
+  if (namedImam) return `${query} identity lineage role teachings`;
   return "";
 }
 
-export function resolveLocalConversation(query, conversation, globalMemory) {
+function shouldRetrieveNarrations(query) {
   const normalized = normalize(query);
+  const explicitEvidence = /\b(?:hadith|ahadith|narration|narrations|riwaya|riwayat|report from|source for|what did (?:the )?imam|did (?:the )?imam say)\b/i.test(normalized)
+    || /(?:حدیث|حديث|روایت|رواية|امام نے کیا فرمایا|قال الامام)/u.test(query);
+  if (explicitEvidence) return true;
+
+  const practice = /\b(?:wudu|wudhu|wuzu|ablution|prayer|pray|salah|salat|namaz|fast|sawm|zakat|khums|nikah|talaq|taqiyya|taqiyyah|halal|haram|najis|tahir|purity|ghusl|tayammum)\b/i.test(normalized)
+    || /(?:وضو|وضوء|نماز|صلاة|زکات|زكاة|خمس|نکاح|نكاح|تقیہ|تقية|حلال|حرام|نجس|طاهر|غسل|تيمم)/u.test(query);
+  const practicalQuestion = /\b(?:how|what|when|where|why|can|could|may|should|must|is|are|does|do|did|allowed|valid|invalid|break|invalidate|ruling)\b/i.test(normalized)
+    || /[?؟]/u.test(query);
+  return practice && practicalQuestion;
+}
+
+export function resolveLocalConversation(query, conversation, globalMemory) {
   const switchedLanguage = requestedLanguage(query);
   const detectedLanguage = detectConversationLanguage(query);
   const rememberedLanguage = conversation?.memory?.language || globalMemory?.profile?.language;
   const language = switchedLanguage
     || (detectedLanguage !== "english" ? detectedLanguage : rememberedLanguage)
     || detectedLanguage;
-  const copy = RESPONSES[language] || RESPONSES.english;
   const memoryUpdate = extractMemory(query)
     || (switchedLanguage ? { key: "language", value: switchedLanguage } : null);
-  const name = globalMemory?.profile?.name || "";
+  const expanded = expandedReligiousQuery(query);
 
-  if (memoryUpdate) {
-    return { intent: "memory", language, text: copy.remembered, memoryUpdate };
-  }
-  if (/\b(what do you remember|what have you remembered|do you remember me|what do you know about me)\b/i.test(normalized)
-    || /(?:کیا یاد|کی یاد|ماذا تتذكر)/u.test(query)) {
-    return { intent: "memory-recall", language, text: memorySummary(globalMemory, language) };
-  }
-  if (/\b(what(?:'s| is) my name|who am i)\b/i.test(normalized) || /میرا نام کیا|ما اسمي/u.test(query)) {
+  if (expanded || shouldRetrieveNarrations(query)) {
     return {
-      intent: "memory-recall",
+      intent: "religious-search",
       language,
-      text: name ? `${language === "english" ? "Your name is" : "Name"} ${name}.` : copy.noMemory,
+      searchQuery: expanded || String(query || "").trim(),
+      memoryUpdate,
     };
   }
-  if (/^(hi|hello|hey|yo|hiya|good (?:morning|evening|afternoon))[.! ]*$/i.test(normalized)
-    || /^(salam|salaam|assalamu alaykum|as-salamu alaykum)[.! ]*$/i.test(normalized)
-    || /^(السلام عليكم|سلام|مرحبا|السلام علیکم)[.!، ]*$/u.test(query)) {
-    return { intent: "greeting", language: normalized === "hi" ? "english" : language, text: (normalized === "hi" ? RESPONSES.english : copy).greeting(name) };
-  }
-  if (/\b(how are you|how's it going|kya haal|ki haal|kiven ho|kayfa haluk)\b/i.test(normalized)
-    || /كيف حالك|کیا حال|کی حال/u.test(query)) {
-    return { intent: "wellbeing", language, text: copy.wellbeing };
-  }
-  if (/^(thanks|thank you|thx|shukriya|shukran|جزاك الله|شکریہ)[.! ]*$/iu.test(normalized)) {
-    return { intent: "thanks", language, text: copy.thanks };
-  }
-  if (/^(bye|goodbye|allah hafiz|khuda hafiz|ma'a salama|خدا حافظ|اللہ حافظ|مع السلامة)[.! ]*$/iu.test(normalized)) {
-    return { intent: "farewell", language, text: copy.farewell };
-  }
-  if (/\b(who are you|what are you|your name)\b/i.test(normalized) || /من أنت|آپ کون|تسی کون/u.test(query)) {
-    return { intent: "identity", language, text: copy.identity };
-  }
-  if (switchedLanguage || /\b(what can you do|help me|capabilities)\b/i.test(normalized)) {
-    return { intent: "capability", language, text: copy.capability, memoryUpdate };
-  }
-  if (!RELIGIOUS_TERMS.test(normalized) && !RELIGIOUS_SCRIPT_TERMS.test(query)) {
-    return {
-      intent: "conversation",
-      language,
-      text: normalized.split(/\s+/).length <= 7 && !/[?؟]/u.test(query) ? copy.capability : copy.general,
-    };
-  }
-  return null;
+
+  return {
+    intent: "local-llm",
+    language,
+    memoryUpdate,
+  };
 }
 
 function meaningfulWords(value) {
@@ -253,10 +169,7 @@ export function generateConversationTitle(conversation, latestQuery = "", result
   if (/\b(how|teach|method)\b/.test(normalized) && /\b(pray|prayer|salah|salat|namaz)\b/.test(normalized)) {
     return "Learning the Imam’s Prayer";
   }
-  if (/\b(clay|paradise|shadows)\b/.test(normalized)) return "Creation, Clay, and Covenant";
-
-  const words = meaningfulWords(allUserText)
-    .filter((word, index, all) => all.indexOf(word) === index);
+  const words = meaningfulWords(allUserText).filter((word, index, all) => all.indexOf(word) === index);
   if (words.length) {
     return words
       .slice(-5)
@@ -269,5 +182,5 @@ export function generateConversationTitle(conversation, latestQuery = "", result
       .replace(/^Al-[^:]+:\s*/i, "")
       .slice(0, 52);
   }
-  return "Welcome Conversation";
+  return "New inquiry";
 }

@@ -775,11 +775,35 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1px;
-  margin: 18px 20px;
+  margin: 10px 0 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.065);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.05);
+}
+
+.source-text-details {
+  margin: 16px 20px;
+}
+
+.source-text-details > summary {
+  cursor: pointer;
+  color: #9c8658;
+  font-family: "Hubot Sans", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.elucidation-followup {
+  margin: 0 20px 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(226, 184, 91, 0.12);
+  border-radius: 10px;
+  background: rgba(226, 184, 91, 0.04);
+  color: #c8b787;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .parallel-text > div {
