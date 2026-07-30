@@ -74,13 +74,64 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     perSeed: 18,
   });
   const records = await loadCandidateRecords(expandedCandidates);
-  const results = rerankLoadedRecords({
+  let results = rerankLoadedRecords({
     manifest,
     plan,
     candidates: expandedCandidates,
     records,
     resultLimit,
-  });
+  }).map((result) => ({ ...result, evidenceRole: "direct" }));
+  const secondaryQueries = [
+    ...(Array.isArray(retrievalProfile?.secondaryQueries) ? retrievalProfile.secondaryQueries : []),
+    ...(retrievalProfile?.secondaryQuery ? [retrievalProfile.secondaryQuery] : []),
+  ].filter((query, index, all) => query && all.indexOf(query) === index);
+  if (secondaryQueries.length) {
+    const supplementalBuckets = [];
+    for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
+      const secondaryQuery = secondaryQueries[queryIndex];
+      const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
+      const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
+      const secondary = await search(secondaryQuery, {
+      resultLimit: 5,
+      filters,
+      retrievalProfile: {
+        ...retrievalProfile,
+        secondaryQuery: "",
+        secondaryQueries: [],
+        boostTerms: secondaryQuery.split(/\s+/).filter(Boolean),
+        requireSubjectMatch: true,
+        subjectTermGroups: requiredSubjects.length ? requiredSubjects : [secondaryQuery],
+        minimumSubjectCoverage: 0.5,
+        requireFocusCoverage: true,
+        minimumFocusCoverage: 0.34,
+        disableFocus: false,
+        requireFocusFacetProximity: false,
+        rewritten: true,
+        relaxed: true,
+      },
+      });
+      supplementalBuckets.push(secondary.results.map((result) => ({ ...result, evidenceRole })));
+    }
+    const supplementalResults = [];
+    const maxBucketLength = Math.max(0, ...supplementalBuckets.map((bucket) => bucket.length));
+    for (let index = 0; index < maxBucketLength; index += 1) {
+      for (const bucket of supplementalBuckets) {
+        if (bucket[index]) supplementalResults.push(bucket[index]);
+      }
+    }
+    const seenSupplemental = new Set();
+    const promotedSupplemental = supplementalResults.filter((result) => {
+      const key = result.link || result.id;
+      if (seenSupplemental.has(key)) return false;
+      seenSupplemental.add(key);
+      return true;
+    }).slice(0, Math.max(1, Math.min(6, Number(retrievalProfile?.secondaryPromotionLimit) || 3)));
+    const promotedKeys = new Set(promotedSupplemental.map((result) => result.link || result.id));
+    results = [
+      ...promotedSupplemental,
+      ...results.filter((result) => !promotedKeys.has(result.link || result.id)),
+    ].slice(0, resultLimit);
+  }
   return { candidates, expandedCandidates, results };
 }
 

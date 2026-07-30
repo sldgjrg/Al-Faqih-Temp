@@ -1,9 +1,21 @@
 import { validateGeneratedReply } from "./local-output-guard.mjs";
 
 const WEBLLM_URL = "https://esm.run/@mlc-ai/web-llm@0.2.84";
-const MODEL_ID = "Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
-const MODEL_LABEL = "Qwen2.5 0.5B";
-const APPROXIMATE_DOWNLOAD_MB = 290;
+const MODEL_OPTIONS = [
+  {
+    id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+    label: "Qwen2.5 1.5B",
+    approximateDownloadMb: 900,
+  },
+  {
+    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    label: "Qwen2.5 0.5B (compatibility fallback)",
+    approximateDownloadMb: 290,
+  },
+];
+let MODEL_ID = MODEL_OPTIONS[0].id;
+let MODEL_LABEL = MODEL_OPTIONS[0].label;
+let APPROXIMATE_DOWNLOAD_MB = MODEL_OPTIONS[0].approximateDownloadMb;
 
 let webllmPromise;
 let enginePromise;
@@ -55,10 +67,17 @@ function progressPercent(report) {
 async function createEngine() {
   await requireWebGPU();
   const webllm = await loadWebLLM();
-  const record = webllm.prebuiltAppConfig?.model_list?.find((item) => item.model_id === MODEL_ID);
-  if (!record) throw new Error(`${MODEL_ID} is not present in this WebLLM build.`);
+  const availableModels = MODEL_OPTIONS
+    .map((option) => ({
+      option,
+      record: webllm.prebuiltAppConfig?.model_list?.find((item) => item.model_id === option.id),
+    }))
+    .filter(({ record }) => Boolean(record));
+  if (!availableModels.length) {
+    throw new Error("Neither supported Qwen2.5 model is present in this WebLLM build.");
+  }
 
-  async function instantiate(cacheBackend) {
+  async function instantiate(record, cacheBackend) {
     const appConfig = {
       ...webllm.prebuiltAppConfig,
       model_list: [record],
@@ -91,22 +110,50 @@ async function createEngine() {
     });
   }
 
-  let cacheBackend = self.navigator?.storage?.getDirectory ? "opfs" : "indexeddb";
-  try {
-    engine = await instantiate(cacheBackend);
-  } catch (error) {
-    if (cacheBackend !== "opfs") throw error;
-    cacheBackend = "indexeddb";
-    post("model-status", {
-      status: "loading",
-      message: "OPFS cache was unavailable; retrying with IndexedDB",
-      percent: 0,
-      device: "webgpu",
-      model: MODEL_ID,
-      modelLabel: MODEL_LABEL,
-      cacheBackend,
-    });
-    engine = await instantiate(cacheBackend);
+  let lastError;
+  let cacheBackend = "indexeddb";
+  for (const { option, record } of availableModels) {
+    MODEL_ID = option.id;
+    MODEL_LABEL = option.label;
+    APPROXIMATE_DOWNLOAD_MB = option.approximateDownloadMb;
+    cacheBackend = self.navigator?.storage?.getDirectory ? "opfs" : "indexeddb";
+    try {
+      engine = await instantiate(record, cacheBackend);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (cacheBackend === "opfs") {
+        cacheBackend = "indexeddb";
+        post("model-status", {
+          status: "loading",
+          message: "OPFS cache was unavailable; retrying with IndexedDB",
+          percent: 0,
+          device: "webgpu",
+          model: MODEL_ID,
+          modelLabel: MODEL_LABEL,
+          cacheBackend,
+        });
+        try {
+          engine = await instantiate(record, cacheBackend);
+          break;
+        } catch (indexedDbError) {
+          lastError = indexedDbError;
+        }
+      }
+      if (option !== availableModels.at(-1)?.option) {
+        post("model-status", {
+          status: "loading",
+          message: `${MODEL_LABEL} could not run on this device; loading the smaller compatibility model`,
+          percent: 0,
+          device: "webgpu",
+          model: MODEL_ID,
+          modelLabel: MODEL_LABEL,
+        });
+      }
+    }
+  }
+  if (!engine) {
+    throw lastError || new Error("No supported local model could be loaded on this device.");
   }
 
   post("model-ready", {
@@ -169,13 +216,13 @@ function extractiveSynthesisFallback(latestUserMessage) {
     const excerpt = block.match(/^Published translation excerpt:\s*([\s\S]+)$/mu)?.[1]
       ?.replace(/\s+/g, " ")
       .trim()
-      .slice(0, 520);
+      .slice(0, 900);
     if (!excerpt) return "";
     return `- Report ${number}, ${collection}, “${title}”: ${excerpt}`;
   }).filter(Boolean);
   return `Direct answer
 
-The local model could not produce a fully grounded synthesis, so no additional conclusion has been added.
+The local model could not produce a fully grounded synthesis, so no conclusion has been added. This fallback is not a finding for or against the requested act.
 
 Evidence
 
@@ -191,7 +238,7 @@ function generationOptions(data, messages, mode, repair = false) {
   const options = {
     messages,
     stream: true,
-    max_tokens: Math.max(chat ? 12 : 48, Math.min(420, Number(data.maxNewTokens) || (chat ? 96 : 220))),
+    max_tokens: Math.max(chat ? 12 : 48, Math.min(560, Number(data.maxNewTokens) || (chat ? 96 : 260))),
     temperature: repair ? 0 : Math.max(0, Math.min(0.65, Number(data.temperature) || (chat ? 0.35 : 0.1))),
     top_p: chat ? 0.9 : 0.92,
     frequency_penalty: chat ? 0.18 : 0.08,

@@ -379,7 +379,7 @@ function ElucidationMessage({ elucidation }) {
             </div>
             <div>
               <span>Published translation</span>
-              <p>{elucidation.parallel.english}</p>
+              <p>{cleanCorpusMarkdown(elucidation.parallel.english || "")}</p>
             </div>
           </section>
         </details>

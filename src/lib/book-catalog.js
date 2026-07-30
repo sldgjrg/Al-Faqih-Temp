@@ -139,6 +139,16 @@ function candidateScore(query, alias) {
 }
 
 function corpusBooks(manifest) {
+  if (Array.isArray(manifest?.bibliography)) {
+    return manifest.bibliography
+      .filter(([title, author]) => title && author && !/not identified/i.test(author))
+      .map(([title, author]) => ({
+        title,
+        author,
+        aliases: [title],
+        source: "corpus metadata",
+      }));
+  }
   if (!Array.isArray(manifest?.metadata) || !manifest?.strings) return [];
   const books = new Map();
   for (const metadata of manifest.metadata) {

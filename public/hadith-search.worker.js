@@ -384,6 +384,16 @@ function parseInlineFilters(query, suppliedFilters = {}) {
 }
 
 function readyManifest() {
+  const bibliography = [];
+  const seenBooks = new Set();
+  for (const metadata of manifest.metadata || []) {
+    const collection = manifest.strings.collections?.[metadata[1]];
+    const author = manifest.strings.authors?.[metadata[2]];
+    const key = `${collection || ""}\u0000${author || ""}`;
+    if (!collection || !author || seenBooks.has(key)) continue;
+    seenBooks.add(key);
+    bibliography.push([collection, author]);
+  }
   return {
     version: manifest.version,
     documentCount: manifest.documentCount,
@@ -391,6 +401,8 @@ function readyManifest() {
     collections: manifest.strings.collections,
     authors: manifest.strings.authors,
     imams: manifest.imams,
+    bibliography,
+    lexicon: manifest.lexicon,
     mode: "hybrid-related",
   };
 }
@@ -508,6 +520,33 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     retrievalProfile,
     limit: Math.max(120, Math.min(480, Number(retrievalProfile?.candidateLimit) || 300)),
   });
+  if (!candidates.length && retrievalProfile?.rewritten && !retrievalProfile?.relaxed
+    && plan.subjectSourceGroups?.some((group) => group.hashes.size > 0)) {
+    self.postMessage({
+      type: "status",
+      requestId,
+      message: "The exact modern wording was not indexed; broadening to governing corpus evidence",
+    });
+    return search({
+      requestId,
+      query,
+      filters,
+      retrievalProfile: {
+        ...retrievalProfile,
+        relaxed: true,
+        requireSubjectMatch: true,
+        // Keep the semantic subject anchors while relaxing only the scoring
+        // gates.  `secondaryQuery` is scoped to the supplemental loop below
+        // and must never be referenced by this generic fallback.
+        subjectTermGroups: Array.isArray(retrievalProfile?.subjectTermGroups)
+          ? retrievalProfile.subjectTermGroups
+          : [],
+        minimumSubjectCoverage: 0.5,
+        requireFocusCoverage: false,
+        disableFocus: true,
+      },
+    });
+  }
   if (!candidates.length && !retrievalProfile?.rewritten) {
     self.postMessage({
       type: "rewrite-needed",
@@ -554,13 +593,86 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     propagationThreshold: Math.max(0.35, Math.min(0.8, Number(retrievalProfile?.familyPropagationThreshold) || 0.48)),
   });
   const records = await loadCandidateRecords(expandedCandidates);
-  const results = rerankLoadedRecords({
+  let results = rerankLoadedRecords({
     manifest,
     plan,
     candidates: expandedCandidates,
     records,
     resultLimit: Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
-  });
+  }).map((result) => ({ ...result, evidenceRole: "direct" }));
+  const secondaryQueries = [
+    ...(Array.isArray(retrievalProfile?.secondaryQueries) ? retrievalProfile.secondaryQueries : []),
+    ...(retrievalProfile?.secondaryQuery ? [retrievalProfile.secondaryQuery] : []),
+  ].filter((query, index, all) => query && all.indexOf(query) === index);
+  if (secondaryQueries.length) {
+    const supplementalBuckets = [];
+    for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
+      const secondaryQuery = secondaryQueries[queryIndex];
+      const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
+      const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
+      const secondaryProfile = {
+        ...retrievalProfile,
+        secondaryQuery: "",
+        secondaryQueries: [],
+        // Score each evidence role by its own vocabulary and require its
+        // subject anchor so broad relation words cannot promote an unrelated
+        boostTerms: secondaryQuery.split(/\s+/).filter(Boolean),
+        requireSubjectMatch: true,
+        subjectTermGroups: requiredSubjects.length ? requiredSubjects : [secondaryQuery],
+        minimumSubjectCoverage: 0.5,
+        requireFocusCoverage: true,
+        minimumFocusCoverage: 0.34,
+        disableFocus: false,
+        requireFocusFacetProximity: false,
+        rewritten: true,
+        relaxed: true,
+      };
+      const secondaryParsed = parseInlineFilters(secondaryQuery, filters);
+      const secondaryRanked = rankPassageCandidates({
+        manifest,
+        passageHashes,
+        passageWeights,
+        passageDocuments,
+        passageLengths,
+        query: secondaryParsed.cleanQuery,
+        filters: secondaryParsed.filters,
+        retrievalProfile: secondaryProfile,
+        limit: Math.max(120, Math.min(360, Number(retrievalProfile?.candidateLimit) || 240)),
+      });
+      if (!secondaryRanked.candidates.length) continue;
+      const secondaryRecords = await loadCandidateRecords(secondaryRanked.candidates);
+      supplementalBuckets.push(rerankLoadedRecords({
+        manifest,
+        plan: secondaryRanked.plan,
+        candidates: secondaryRanked.candidates,
+        records: secondaryRecords,
+        resultLimit: 5,
+      }).map((result) => ({ ...result, evidenceRole })));
+    }
+    const supplementalResults = [];
+    const maxBucketLength = Math.max(0, ...supplementalBuckets.map((bucket) => bucket.length));
+    for (let index = 0; index < maxBucketLength; index += 1) {
+      for (const bucket of supplementalBuckets) {
+        if (bucket[index]) supplementalResults.push(bucket[index]);
+      }
+    }
+    const seenSupplemental = new Set();
+    const promotedSupplemental = supplementalResults.filter((result) => {
+      const key = result.link || result.id;
+      if (seenSupplemental.has(key)) return false;
+      seenSupplemental.add(key);
+      return true;
+    }).slice(0, Math.max(1, Math.min(6, Number(retrievalProfile?.secondaryPromotionLimit) || 3)));
+    const promotedKeys = new Set(promotedSupplemental.map((result) => result.link || result.id));
+    // A secondary query is allowed to promote a report already found by the
+    // original wording.  The old global `seen` filter silently discarded that
+    // stronger supplemental ranking, leaving loosely related reports ahead of
+    // the answer-bearing narration.
+    results = [
+      ...promotedSupplemental,
+      ...results.filter((result) => !promotedKeys.has(result.link || result.id)),
+    ].slice(0, Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)));
+  }
   if (!results.length && !retrievalProfile?.rewritten) {
     self.postMessage({
       type: "rewrite-needed",
@@ -571,6 +683,26 @@ async function search({ requestId, query, filters, retrievalProfile }) {
       },
     });
     return;
+  }
+  if (!results.length && retrievalProfile?.rewritten && !retrievalProfile?.relaxed
+    && plan.subjectSourceGroups?.some((group) => group.hashes.size > 0)) {
+    self.postMessage({
+      type: "status",
+      requestId,
+      message: "The exact modern wording was not indexed; broadening to governing corpus evidence",
+    });
+    return search({
+      requestId,
+      query,
+      filters,
+      retrievalProfile: {
+        ...retrievalProfile,
+        relaxed: true,
+        requireSubjectMatch: false,
+        requireFocusCoverage: false,
+        disableFocus: true,
+      },
+    });
   }
   const anchors = results.filter((result) => result.clusterRole !== "parallel");
   const parallels = results.filter((result) => result.clusterRole === "parallel");

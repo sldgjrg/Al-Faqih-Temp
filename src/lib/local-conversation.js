@@ -143,6 +143,23 @@ const RETRIEVAL_FACETS = [
     secondaryDirectRatio: 0.68,
   },
   {
+    name: "time-definition",
+    pattern: /\b(?:what\s+time|when\s+(?:does|do|did|is|are|should|can|may)|start(?:s|ing)?\s+time|end(?:s|ing)?\s+time|earliest|latest|deadline|time\s+(?:for|of|to)|how\s+(?:early|late|long)|until\s+when)\b/i,
+    scriptPattern: /(?:متى|وقت|کب|کس وقت|کِس وقت|کدوں)/u,
+    strict: false,
+    terms: [
+      "time", "begin", "start", "end", "until", "before", "after",
+      "appear", "sign", "criterion", "light", "darkness", "horizon",
+    ],
+    resultLimit: 6,
+    maxDirectResults: 5,
+    maxFamilyMembers: 5,
+    maxPerChapter: 4,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.4,
+    relatedFloorRatio: 0.32,
+  },
+  {
     name: "signs-events",
     pattern: /\b(?:signs?|before\s+(?:the\s+)?(?:appearance|reappearance|rise)|when\s+will|emergence|reappearance|advent|sufyani|dajjal|yamani)\b/i,
     scriptPattern: /(?:علامات|قبل الظهور|الظهور|الخروج|السفياني|الدجال|اليماني)/u,
@@ -169,7 +186,7 @@ const RETRIEVAL_FACETS = [
   },
   {
     name: "legal-practical",
-    pattern: /\b(?:allowed|permitted|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|can\s+i|may\s+i|should\s+i|must\s+i|what\s+should\s+i\s+do)\b/i,
+    pattern: /\b(?:allowed|permitted|permissible|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|(?:can|could|may|should|must)\s+(?!you\b)\S+|what\s+should\s+i\s+do)\b/i,
     scriptPattern: /(?:يجوز|لا يجوز|واجب|مستحب|حرام|حلال|نجس|طاهر|حكم|کیا میں|جائز|ناجائز)/u,
     strict: false,
     terms: [],
@@ -206,16 +223,40 @@ function requestedCollection(query, manifest) {
     .sort((left, right) => right.normalized.length - left.normalized.length)[0]?.normalized || "";
 }
 
+function shouldAnalyzeQuery(original, normalized, facet, manifest) {
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  const knownCorpusTerms = corpusTermCount(original, manifest);
+  if (facet?.name === "time-definition") return true;
+  if (facet?.name === "method") {
+    return wordCount > 6;
+  }
+  if (facet?.name === "legal-practical") {
+    return knownCorpusTerms < 2
+      || wordCount > 5
+      || /\b(?:can|could|may|should|must|another|someone|work|job|sell|buy|under|without|except|all|every|circumstances?)\b/i.test(normalized);
+  }
+  // Named concepts and transliterations are often absent as an exact phrase
+  // even when their reports are present under descriptive wording.  Send
+  // short, unfamiliar general corpus questions through the semantic planner
+  // instead of treating an empty exact-match search as authoritative.
+  return knownCorpusTerms < 2 && wordCount >= 2;
+}
+
 export function buildReligiousSearchPlan(query, manifest) {
   const original = String(query || "").trim();
   const normalized = normalize(original);
   const signsBeforeAppearance = /\b(?:signs?|events?|conditions?)\b.{0,48}\b(?:before|preceding|prior\s+to)\b.{0,32}\b(?:appearance|reappearance|advent|rise|emergence)\b/i.test(normalized)
     || /(?:علامات|أحداث).{0,30}(?:قبل|تسبق).{0,24}(?:الظهور|الخروج)/u.test(original);
+  const timeDefinitionFacet = RETRIEVAL_FACETS.find((candidate) => candidate.name === "time-definition");
+  const asksForTimeBoundary = timeDefinitionFacet.pattern.test(normalized)
+    || timeDefinitionFacet.scriptPattern.test(original);
   const facet = signsBeforeAppearance
     ? RETRIEVAL_FACETS.find((candidate) => candidate.name === "signs-events")
-    : RETRIEVAL_FACETS.find((candidate) => (
+    : asksForTimeBoundary
+      ? timeDefinitionFacet
+      : RETRIEVAL_FACETS.find((candidate) => (
       candidate.pattern.test(normalized) || candidate.scriptPattern.test(original)
-    )) || null;
+      )) || null;
   const entity = entityExpansion(original, normalized);
   const requiredCollection = requestedCollection(original, manifest);
   const expansionParts = [original, entity.text];
@@ -226,16 +267,20 @@ export function buildReligiousSearchPlan(query, manifest) {
     retrievalProfile: {
       version: 3,
       facet: facet?.name || "general",
+      needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest),
       strictFacet: Boolean(facet?.strict),
       requiredTerms: facet?.strict ? facet.terms : [],
       boostTerms: facet?.terms || [],
       entityTerms: entity.terms,
       requireEntityMatch: entity.detected,
       requireFocusCoverage: true,
-      requireFocusFacetProximity: facet?.name === "method",
-      minimumTitleFocusFacetDensity: facet?.name === "method" ? 0.14 : 0,
+      requireFocusFacetProximity: facet?.name === "method" || facet?.name === "time-definition",
+      minimumTitleFocusFacetDensity: facet?.name === "method" || facet?.name === "time-definition" ? 0.14 : 0,
       minimumFocusCoverage: 0.6,
       requiredCollection,
+      secondaryQuery: "",
+      secondaryQueries: [],
+      secondaryBoostTerms: [],
       resultLimit: Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
@@ -257,6 +302,66 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
+      secondaryPromotionLimit: 4,
+    },
+  };
+}
+
+export function applyQueryAnalysisToSearchPlan(searchQuery, retrievalProfile = {}, analysis) {
+  if (!analysis?.retrievalQuery) {
+    return {
+      searchQuery: String(searchQuery || "").trim(),
+      retrievalProfile: { ...retrievalProfile, rewritten: true },
+    };
+  }
+  const evidenceQueries = (Array.isArray(analysis.evidenceQueries) ? analysis.evidenceQueries : [])
+    .map((entry) => typeof entry === "string" ? entry : entry?.query)
+    .map((entry) => String(entry || "").trim())
+    .filter((entry, index, all) => entry && all.indexOf(entry) === index)
+    .slice(0, 4);
+  const subjectTermGroups = analysis.evidenceSubjects?.length
+    ? analysis.evidenceSubjects
+    : analysis.exactSubjects;
+  const answerCriteria = Array.isArray(analysis.answerCriteria)
+    ? analysis.answerCriteria.filter(Boolean)
+    : [];
+  const expandedQuery = [
+    searchQuery,
+    analysis.retrievalQuery,
+    ...answerCriteria,
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const secondaryQueries = [
+    ...evidenceQueries,
+    ...(Array.isArray(retrievalProfile.secondaryQueries) ? retrievalProfile.secondaryQueries : []),
+  ].filter((entry, index, all) => entry && all.indexOf(entry) === index).slice(0, 4);
+  const requireSubjectMatch = subjectTermGroups?.length > 0
+    && analysis.confidence >= 0.55;
+  return {
+    searchQuery: expandedQuery,
+    retrievalProfile: {
+      ...retrievalProfile,
+      rewritten: true,
+      relation: analysis.relation || retrievalProfile.relation || "general",
+      answerCriteria,
+      boostTerms: [
+        ...(Array.isArray(retrievalProfile.boostTerms) ? retrievalProfile.boostTerms : []),
+        ...answerCriteria.flatMap((entry) => entry.split(/\s+/).filter(Boolean)),
+      ],
+      evidenceRoles: (analysis.evidenceQueries || [])
+        .map((entry) => typeof entry === "object" ? String(entry?.role || "") : "")
+        .filter(Boolean)
+        .slice(0, 4),
+      evidenceQuerySubjects: (analysis.evidenceQueries || [])
+        .map((entry) => Array.isArray(entry?.requiredSubjects) ? entry.requiredSubjects : [])
+        .slice(0, 4),
+      subjectTermGroups,
+      requireSubjectMatch,
+      minimumSubjectCoverage: 0.4,
+      requireFocusCoverage: false,
+      secondaryQuery: secondaryQueries[0] || "",
+      secondaryQueries,
+      secondaryBoostTerms: secondaryQueries.flatMap((entry) => entry.split(/\s+/).filter(Boolean)),
+      secondaryPromotionLimit: Math.max(3, Math.min(4, secondaryQueries.length || 3)),
     },
   };
 }
@@ -266,7 +371,10 @@ function corpusTermCount(query, manifest) {
   if (!lexicon.size) return 0;
   return normalize(query)
     .split(/\s+/)
-    .filter((token, index, all) => token.length > 2 && all.indexOf(token) === index && lexicon.has(token))
+    .filter((token, index, all) => token.length > 2
+      && !ENGLISH_STOP_WORDS.has(token)
+      && all.indexOf(token) === index
+      && lexicon.has(token))
     .length;
 }
 
@@ -285,8 +393,15 @@ function shouldRetrieveNarrations(query, manifest) {
   const corpusTerms = corpusTermCount(query, manifest);
   const religiousQuestion = (RELIGIOUS_DOMAIN.test(normalized) || RELIGIOUS_SCRIPT_DOMAIN.test(query))
     && inquiry;
+  const normativeQuestion = !/^\s*(?:can|could|would|will)\s+you\b/i.test(normalized)
+    && (
+      /\b(?:can|could|may|should|must)\s+(?!you\b)(?:\S+\s+){0,12}\S+/i.test(normalized)
+      || /\b(?:allowed|permitted|permissible|forbidden|obligatory|recommended|valid|invalid|haram|halal|ruling)\b/i.test(normalized)
+      || /\b(?:is|are|was|were)\b.{0,100}\b(?:allowed|permitted|permissible|forbidden|obligatory|recommended|valid|invalid)\b/i.test(normalized)
+    );
   return religiousQuestion
     || (practice && inquiry)
+    || normativeQuestion
     || (corpusTerms >= 1 && (inquiry || normalized.split(/\s+/).length <= 5));
 }
 

@@ -19,6 +19,7 @@ import { loadConversationState, saveConversationState } from "@/lib/conversation
 import { cleanCorpusDisplay, cleanCorpusMarkdown } from "@/lib/corpus-display";
 import { resolveElucidation } from "@/lib/hadith-elucidation";
 import {
+  applyQueryAnalysisToSearchPlan,
   applyMemoryUpdate,
   generateConversationTitle,
   resolveLocalConversation,
@@ -27,10 +28,12 @@ import {
 import {
   conversationMessages,
   elucidationMessages,
+  methodEvidenceSynthesis,
   parseElucidationJson,
   parseQueryAnalysisJson,
   queryAnalysisMessages,
   synthesisMessages,
+  timeDefinitionEvidenceSynthesis,
 } from "@/lib/local-model-prompts";
 
 const THINKING_PHRASES = [
@@ -456,7 +459,7 @@ function ElucidationMessage({ elucidation }) {
             </div>
             <div>
               <span>Published translation</span>
-              <p>{elucidation.parallel.english}</p>
+              <p>{cleanCorpusMarkdown(elucidation.parallel.english || "")}</p>
             </div>
           </section>
         </details>
@@ -543,7 +546,7 @@ function AssistantMessage({ message }) {
       {message.synthesis?.text && (
         <section className="conversation-response hadith-synthesis">
           <ReactMarkdown>{message.synthesis.text}</ReactMarkdown>
-          <small>Generated locally from the displayed narrations{message.synthesis.modelLabel ? ` · ${message.synthesis.modelLabel}` : ""}; not a chain grading or fatwa.</small>
+          <small>{message.synthesis.sourceOnly ? "Built directly from the displayed narration" : "Generated locally from the displayed narrations"}{message.synthesis.modelLabel ? ` · ${message.synthesis.modelLabel}` : ""}; not a chain grading or fatwa.</small>
         </section>
       )}
       {groupNarrationResults(message.results).map((group, index) => (
@@ -791,7 +794,7 @@ export default function LocalHadithChat() {
     }
 
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=19", {
+      chatWorker = new Worker("/local-llm.worker.js?v=25", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -847,7 +850,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=19", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=25", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -889,35 +892,27 @@ export default function LocalHadithChat() {
             : conversation));
         requestLocalGeneration(
           queryAnalysisMessages(pending.synthesisQuery || pending.query),
-          { mode: "query-analysis", maxNewTokens: 140, temperature: 0 },
+          { mode: "query-analysis", maxNewTokens: 260, temperature: 0 },
         )
           .then((generation) => {
             const analysis = parseQueryAnalysisJson(generation.text);
-            const retrievalProfile = {
-              ...(pending.retrievalProfile || {}),
-              rewritten: true,
-              ...(analysis
-                ? {
-                    requireSubjectMatch: true,
-                    subjectTermGroups: analysis.exactSubjects,
-                    minimumFocusCoverage: 0.45,
-                  }
-                : {}),
-            };
-            const rewrittenQuery = analysis
-              ? `${pending.retrievalQuery} ${analysis.retrievalQuery}`.replace(/\s+/g, " ").trim()
-              : pending.retrievalQuery;
+            const refined = applyQueryAnalysisToSearchPlan(
+              pending.retrievalQuery,
+              pending.retrievalProfile || {},
+              analysis,
+            );
             pendingRef.current.set(data.requestId, {
               ...pending,
-              retrievalQuery: rewrittenQuery,
-              retrievalProfile,
+              retrievalQuery: refined.searchQuery,
+              retrievalProfile: refined.retrievalProfile,
+              queryAnalysis: analysis,
             });
             worker.postMessage({
               type: "search",
               requestId: data.requestId,
-              query: rewrittenQuery,
+              query: refined.searchQuery,
               filters: pending.filters,
-              retrievalProfile,
+              retrievalProfile: refined.retrievalProfile,
             });
           })
           .catch(() => {
@@ -934,6 +929,14 @@ export default function LocalHadithChat() {
       if (data.type === "results") {
         const pending = pendingRef.current.get(data.requestId);
         const conversationId = pending?.conversationId;
+        const synthesisEvidence = data.synthesisResults || data.results;
+        const methodSynthesis = data.results.length && pending?.retrievalProfile?.facet === "method"
+          ? methodEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const timeSynthesis = data.results.length && pending?.retrievalProfile?.facet === "time-definition"
+          ? timeDefinitionEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const sourceSynthesis = methodSynthesis || timeSynthesis;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
           conversation.id === conversationId
@@ -951,14 +954,17 @@ export default function LocalHadithChat() {
                       expandedCandidateCount: data.expandedCandidateCount,
                       clusterCount: data.clusterCount,
                       elapsedMs: data.elapsedMs,
-                      synthesis: data.results.length ? { loading: true, text: "" } : null,
+                      synthesis: data.results.length
+                        ? sourceSynthesis
+                          ? { loading: false, text: sourceSynthesis, sourceOnly: true }
+                          : { loading: true, text: "" }
+                        : null,
                       retrievalPhrase: THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)],
                     }
                   : message),
               }
             : conversation));
-        if (data.results.length && pending?.query) {
-          const synthesisEvidence = data.synthesisResults || data.results;
+        if (data.results.length && pending?.query && !sourceSynthesis) {
           requestLocalGeneration(synthesisMessages(pending.synthesisQuery || pending.query, synthesisEvidence), {
             mode: "synthesis",
             maxNewTokens: synthesisEvidence.length >= 6 ? 460 : 360,
@@ -1323,18 +1329,57 @@ export default function LocalHadithChat() {
             messages: [
               ...conversation.messages,
               userMessage,
-              { id: requestId, role: "assistant", loading: true, status: "Preparing the local index" },
+          { id: requestId, role: "assistant", loading: true, status: localResponse.retrievalProfile?.needsQueryAnalysis
+            ? "Analyzing the exact subject and requested evidence"
+            : "Preparing the local index" },
             ],
           }
         : conversation));
     setInput("");
-    workerRef.current?.postMessage({
-      type: "search",
-      requestId,
-      query: retrievalQuery,
-      filters,
-      retrievalProfile: localResponse.retrievalProfile || null,
-    });
+    if (!localResponse.retrievalProfile?.needsQueryAnalysis) {
+      workerRef.current?.postMessage({
+        type: "search",
+        requestId,
+        query: retrievalQuery,
+        filters,
+        retrievalProfile: localResponse.retrievalProfile || null,
+      });
+      return;
+    }
+    try {
+      const generation = await requestLocalGeneration(
+        queryAnalysisMessages(localResponse.synthesisQuery || query),
+        { mode: "query-analysis", maxNewTokens: 260, temperature: 0 },
+      );
+      const analysis = parseQueryAnalysisJson(generation.text);
+      if (!analysis) throw new Error("The local query analysis was not valid JSON.");
+      const refined = applyQueryAnalysisToSearchPlan(
+        retrievalQuery,
+        localResponse.retrievalProfile || {},
+        analysis,
+      );
+      pendingRef.current.set(requestId, {
+        ...pendingRef.current.get(requestId),
+        retrievalQuery: refined.searchQuery,
+        retrievalProfile: refined.retrievalProfile,
+        queryAnalysis: analysis,
+      });
+      workerRef.current?.postMessage({
+        type: "search",
+        requestId,
+        query: refined.searchQuery,
+        filters,
+        retrievalProfile: refined.retrievalProfile,
+      });
+    } catch {
+      workerRef.current?.postMessage({
+        type: "search",
+        requestId,
+        query: retrievalQuery,
+        filters,
+        retrievalProfile: localResponse.retrievalProfile || null,
+      });
+    }
   }
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length;

@@ -854,9 +854,9 @@ function boundedEditDistance(left, right, maximum) {
 function fuzzyCorpusToken(token, manifest) {
   if (!/^[a-z][a-z0-9]{2,}$/u.test(token) || !Array.isArray(manifest.lexicon)) return "";
   const foldTransliteration = (value) => value
+    .replace(/ee/g, "i")
     .replace(/([aeiou])\1+/g, "$1")
     .replace(/ou/g, "u")
-    .replace(/ee/g, "i")
     .replace(/(?:dh|th|zh|kh|gh)/g, (pair) => pair[0])
     .replace(/q/g, "k");
   const maximumDistance = token.length >= 6 ? 2 : 1;
@@ -871,6 +871,10 @@ function fuzzyCorpusToken(token, manifest) {
     const rawDistance = boundedEditDistance(token, candidate, maximumDistance);
     const foldedDistance = boundedEditDistance(foldedToken, foldedCandidate, maximumDistance);
     if (rawDistance > maximumDistance && foldedDistance > maximumDistance) continue;
+    // A consonant substitution can change the subject completely. Accept a
+    // fuzzy match only when the configured transliteration folding itself
+    // establishes equivalence, rather than relying on edit distance alone.
+    if (foldedDistance > 0) continue;
     const rawSimilarity = 1 - rawDistance / Math.max(token.length, candidate.length);
     const foldedSimilarity = 1 - foldedDistance / Math.max(foldedToken.length, foldedCandidate.length);
     const similarity = Math.max(rawSimilarity, foldedSimilarity);
@@ -1713,7 +1717,11 @@ export function rerankLoadedRecords({
       const subjectMatched = !plan.subjectSourceGroups.length
         || plan.subjectSourceGroups.some((group) => {
           const matches = [...group.hashes].filter((sourceHash) => matchedSourceSet.has(sourceHash)).length;
-          return matches >= Math.max(1, Math.ceil(group.demandCount * 0.66));
+          const requiredCoverage = Math.max(
+            0.34,
+            Math.min(1, Number(plan.retrievalProfile?.minimumSubjectCoverage) || 0.66),
+          );
+          return matches >= Math.max(1, Math.ceil(group.demandCount * requiredCoverage));
         });
       const facetMatches = [...plan.boostFacetSourceHashes].filter((sourceHash) => matchedSourceSet.has(sourceHash));
       const requiredFacetMatches = [...plan.requiredFacetSourceHashes]
