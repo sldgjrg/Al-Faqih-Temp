@@ -145,7 +145,7 @@ function repairMessages(latestUserMessage, reason, mode) {
     return [
       {
         role: "system",
-        content: `Write a grounded answer using only the retrieved reports supplied by the user. Use the headings Direct answer, How the reports fit together, and Limits of the evidence. Mention distinct reports when they add separate evidence. Do not invent a narration or ruling. The previous draft was rejected because: ${reason}.`,
+        content: `Write a grounded answer using only words, concepts, and facts supported by the question and retrieved reports supplied by the user. Use the headings Direct answer, Evidence, and Limits of the evidence. Retrieval relevance is not proof; if the excerpts do not establish the requested relation or ruling, say so. For a method question, use ordinary-procedure reports rather than special-case reports unless the special case was asked about. Absence of a prohibition is not evidence that an act is permissible, and absence of permission is not evidence that it is forbidden. Mention distinct reports when they add separate evidence. Do not invent a narration, person, profession, requirement, or ruling. The previous draft was rejected because: ${reason}.`,
       },
       { role: "user", content: latestUserMessage },
     ];
@@ -157,6 +157,33 @@ function repairMessages(latestUserMessage, reason, mode) {
     },
     { role: "user", content: latestUserMessage },
   ];
+}
+
+function extractiveSynthesisFallback(latestUserMessage) {
+  const source = String(latestUserMessage || "");
+  const blocks = source.match(/REPORT \d+[\s\S]*?(?=\n\n---\n\nREPORT \d+|$)/gu) || [];
+  const evidence = blocks.slice(0, 3).map((block) => {
+    const number = block.match(/^REPORT\s+(\d+)/u)?.[1] || "?";
+    const title = block.match(/^Title:\s*(.+)$/mu)?.[1]?.trim() || `Report ${number}`;
+    const collection = block.match(/^Collection:\s*(.+)$/mu)?.[1]?.trim() || "the supplied collection";
+    const excerpt = block.match(/^Published translation excerpt:\s*([\s\S]+)$/mu)?.[1]
+      ?.replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 520);
+    if (!excerpt) return "";
+    return `- Report ${number}, ${collection}, “${title}”: ${excerpt}`;
+  }).filter(Boolean);
+  return `Direct answer
+
+The local model could not produce a fully grounded synthesis, so no additional conclusion has been added.
+
+Evidence
+
+${evidence.length ? evidence.join("\n") : "The retrieved excerpts are displayed below."}
+
+Limits of the evidence
+
+This is an extractive fallback. It preserves the supplied reports without adding an unsupported ruling or fact.`;
 }
 
 function generationOptions(data, messages, mode, repair = false) {
@@ -171,7 +198,9 @@ function generationOptions(data, messages, mode, repair = false) {
     presence_penalty: chat ? 0.08 : 0,
     seed: repair ? 17 : undefined,
   };
-  if (mode === "elucidation") options.response_format = { type: "json_object" };
+  if (mode === "elucidation" || mode === "query-analysis") {
+    options.response_format = { type: "json_object" };
+  }
   return options;
 }
 
@@ -198,7 +227,7 @@ async function complete(localEngine, data, messages, mode, repair = false) {
 
 async function generate(data) {
   const requestId = data.requestId;
-  const mode = ["conversation", "synthesis", "elucidation"].includes(data.mode)
+  const mode = ["conversation", "synthesis", "elucidation", "query-analysis"].includes(data.mode)
     ? data.mode
     : "conversation";
   const messages = Array.isArray(data.messages)
@@ -246,6 +275,10 @@ async function generate(data) {
       true,
     );
     checked = validateGeneratedReply(completion.text, { latestUserMessage, mode });
+  }
+  if (!checked.ok && mode === "synthesis") {
+    completion = { ...completion, text: extractiveSynthesisFallback(latestUserMessage) };
+    checked = { ok: true, text: completion.text, reason: "" };
   }
   if (!checked.ok) throw new Error(`The local model returned an unusable reply (${checked.reason}).`);
 

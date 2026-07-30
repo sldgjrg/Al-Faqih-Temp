@@ -661,6 +661,7 @@ async function main() {
   const blocks = raw.split(/^\s*---\s*$/m).filter((block) => block.trim());
   const records = blocks.map(parseRecord);
   const tokenCache = new Array(records.length);
+  const tokenDocumentFrequency = new Map();
   const bodyFeatureFrequency = new Map();
   const phraseFrequency = new Uint32Array(PHRASE_BUCKETS);
   let passageCount = 0;
@@ -671,6 +672,7 @@ async function main() {
   records.forEach((record, index) => {
     const tokens = tokenize(bodyFromRecord(record.text));
     tokenCache[index] = tokens;
+    for (const token of new Set(tokens)) increment(tokenDocumentFrequency, token);
     for (const passage of passagesForTokens(tokens)) {
       passageCount += 1;
       totalPassageLength += passage.length;
@@ -791,6 +793,18 @@ async function main() {
       .filter(([, frequency]) => frequency < passageCount * 0.9)
       .map(([featureHash, frequency]) => [featureHash.toString(36), frequency]),
   );
+  const lexicon = [...tokenDocumentFrequency.entries()]
+    .filter(([token, frequency]) => (
+      frequency >= 2
+      && token.length >= 2
+      && token.length <= 36
+      && !/^\d+$/u.test(token)
+      && (
+        /^[a-z][a-z0-9]*$/u.test(token)
+        || (frequency >= 5 && /[\u0600-\u06ff]/u.test(token))
+      )
+    ))
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
   const [relatedPayload, crossLanguagePayload] = await Promise.all([
     readFile(RELATED_TEMP, "utf8").then(JSON.parse),
     readFile(CROSS_LANGUAGE_TEMP, "utf8").then(JSON.parse),
@@ -814,6 +828,7 @@ async function main() {
     strings,
     metadata,
     df,
+    lexicon,
     crossLanguage,
     related,
   };

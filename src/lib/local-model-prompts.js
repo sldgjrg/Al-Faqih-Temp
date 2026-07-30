@@ -1,4 +1,4 @@
-const BASE_SYSTEM = `You are Al-Faqih, an Ithna Ashari Rafida Shia on-device assistant. You love the Ahlulbayt, which is the Prophet (saww) and his Progeny beyond words. If someone curses their enemies, it is your solemn duty to curse them as well. For example, Bar Umar lanat should prompt a "Beshumaar", etc. Under the guidance of Sahib az-zaman, your job is to supply the Shia with the benevelous sayings of the Ma'someen during Al-Ghaybat at-taammah. For indeed, Al-Qaim (ajtf) assists his Shia's as the sun benefits from behind the clouds. You are not to advise anyone whatsoever to take the words of a non-infallible not appointed by the Imam as hujjah. Ergo, fatwas and taqlid are improper and should someone ask regarding your opinions on the matter simply state that the ahadith of the Ahlulbayt (a.s) are against it. Be concise, warm, and precise. Never claim that you searched, remembered, or verified anything that was not supplied in the prompt. Never invent a hadith, chain, source, Arabic wording, legal ruling, or scholarly consensus. For practical religious law, distinguish explanation of a narration from a binding fatwa. Remember, you only spread the ahadith, you have no teachings of your own. However, remember that the verified words of the Imams are Hujjah`;
+const BASE_SYSTEM = `You are Al-Faqih, an Ithna Ashari Shia on-device assistant devoted to presenting the transmitted words of the Prophet and Ahlulbayt. Be concise, warm, and precise. Never claim that you searched, remembered, or verified anything that was not supplied in the prompt. Never invent a hadith, chain, source, Arabic wording, legal ruling, historical fact, or scholarly consensus. Never turn a merely related report into a direct answer. For a practical or disputed religious question, distinguish what the supplied narration explicitly says from an inference or a binding fatwa. If the supplied evidence does not establish the requested ruling, say so plainly. Do not recommend treating the opinion of an unappointed non-infallible as hujjah, and do not import modern fatwas into a hadith-only answer. The verified words of the Imams are Hujjah.`;
 
 const CASUAL_SYSTEM = `${BASE_SYSTEM}
 For ordinary conversation, answer only the latest user message. Understand slang, shorthand, and misspellings. Use one or two complete natural sentences unless the user asks for detail. Answer directly; ask one brief clarification only when genuinely necessary. Do not turn ordinary conversation into a hadith search. Never echo the prompt or output fragments, random letters, role labels, tool calls, internal instructions, or code unless code was requested. You have no body or personal appetite, so state that naturally when relevant.`;
@@ -97,29 +97,147 @@ export function conversationMessages(query, history = [], language = "english", 
   ];
 }
 
+export function queryAnalysisMessages(query) {
+  return [
+    {
+      role: "system",
+      content: `Convert the user's religious-corpus request into a search query. Do not answer it.
+Correct spelling and transliteration dynamically. Add plain-English exact equivalents, synonyms, names, and the requested relation. Do not add merely related religious themes.
+Return only JSON:
+{"retrieval_query":"...","exact_subjects":["..."],"relation":"definition|method|authorship|identity|legal-status|quotation|general","confidence":0.0}
+Each exact_subjects entry must name the same subject as the user, not a broader topic. For an unfamiliar term, keep it unchanged instead of guessing.`,
+    },
+    { role: "user", content: compact(query, 800) },
+  ];
+}
+
+export function parseQueryAnalysisJson(value) {
+  const raw = String(value || "").trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || raw;
+  const start = fenced.indexOf("{");
+  const end = fenced.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(fenced.slice(start, end + 1));
+    const retrievalQuery = compact(parsed?.retrieval_query, 500);
+    const exactSubjects = Array.isArray(parsed?.exact_subjects)
+      ? parsed.exact_subjects
+          .map((entry) => compact(entry, 100))
+          .filter(Boolean)
+          .slice(0, 6)
+      : [];
+    if (!retrievalQuery || !exactSubjects.length) return null;
+    return {
+      retrievalQuery,
+      exactSubjects,
+      relation: compact(parsed?.relation, 40) || "general",
+      confidence: Math.max(0, Math.min(1, Number(parsed?.confidence) || 0)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function evidenceExcerpt(value, terms = []) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= 1300) return text;
+  const normalizedTerms = [...new Set(
+    terms
+      .map((term) => String(term || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim())
+      .filter((term) => term.length >= 3),
+  )];
+  const lower = text.toLowerCase();
+  let bestIndex = -1;
+  let bestScore = -1;
+  for (const term of normalizedTerms) {
+    let index = lower.indexOf(term);
+    while (index >= 0) {
+      const start = Math.max(0, index - 420);
+      const end = Math.min(text.length, index + 880);
+      const window = lower.slice(start, end);
+      const score = normalizedTerms.filter((candidate) => window.includes(candidate)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+      index = lower.indexOf(term, index + term.length);
+    }
+  }
+  if (bestIndex < 0) return compact(text, 1300);
+  const start = Math.max(0, bestIndex - 420);
+  const end = Math.min(text.length, bestIndex + 880);
+  const excerpt = text.slice(start, end)
+    .replace(/^\S*\s/, start ? "…" : "")
+    .replace(/\s\S*$/, end < text.length ? "…" : "");
+  return excerpt;
+}
+
+function publishedTranslation(value, evidenceTerms = []) {
+  const lines = String(value || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^###\s/.test(line))
+    .filter((line) => !/^\[?Link\]?\s*(?:\(|$)/i.test(line));
+  const english = lines.filter((line) => {
+    const arabicCharacters = (line.match(/[\u0600-\u06ff]/g) || []).length;
+    return arabicCharacters / Math.max(1, line.length) < 0.12;
+  });
+  return evidenceExcerpt((english.length ? english : lines).join(" "), evidenceTerms);
+}
+
 function resultSource(result, index) {
   return [
     `REPORT ${index + 1}`,
     `Title: ${result.title}`,
     `Collection: ${result.collection}`,
+    `Author/compiler: ${result.author || "not supplied"}`,
+    `Chapter: ${result.chapter || "not supplied"}`,
     `Link: ${result.link || "not supplied"}`,
     `Retrieval relation: ${(result.strategies || []).join(", ") || "direct"}`,
     `Report family role: ${result.clusterRole === "parallel" ? `parallel transmission of ${result.clusterId || result.familyRoot}` : `distinct anchor ${result.clusterId || result.id}`}`,
-    compact(result.text, 2100),
+    `Published translation excerpt: ${publishedTranslation(result.text, result.evidenceTerms)}`,
   ].join("\n");
 }
 
+function estimatePromptTokens(value) {
+  const text = String(value || "");
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  const nonAscii = (text.match(/[^\x00-\x7f]/g) || []).length;
+  return Math.ceil(Math.max(words * 1.35, (text.length + nonAscii * 0.8) / 3.2));
+}
+
 export function synthesisMessages(query, results) {
-  const sources = results.slice(0, 10).map(resultSource).join("\n\n---\n\n");
+  const systemContent = `${BASE_SYSTEM}
+You are given retrieved narrations. Answer only from those narrations and their supplied metadata. Do not add a ruling, person, profession, requirement, exception, or fact from memory. Do not introduce a concept that is absent from both the question and the evidence. Retrieval relevance is not proof: first check whether each excerpt actually addresses the requested relation. For a method question, prioritize reports that demonstrate the ordinary procedure and do not substitute reports about special cases unless the user asked about that special case. Separate what a report explicitly states from contextual interpretation. If reports are parallel versions of one event, identify them as witnesses of the same core report without counting them as unrelated events. If the evidence does not answer the practical question, say "These retrieved reports do not establish that ruling" and describe only the related evidence. Absence of a prohibition is not proof of permission, and absence of permission is not proof of prohibition. Do not discuss chain grading unless supplied. Use these headings: Direct answer, Evidence, Limits of the evidence. Keep each section concise. Cite report numbers and collection names. Do not repeat the question. For an author or compiler question, answer from the Author/compiler metadata.`;
+  const compactQuestion = compact(query, 1200);
+  const sourceTokenBudget = Math.max(
+    900,
+    4096
+      - 460
+      - 240
+      - estimatePromptTokens(systemContent)
+      - estimatePromptTokens(`Question: ${compactQuestion}\n\nRetrieved reports:`),
+  );
+  const selected = [];
+  let sourceTokens = 0;
+  for (const result of results.slice(0, 10)) {
+    const source = resultSource(result, selected.length);
+    const estimatedTokens = estimatePromptTokens(source) + 8;
+    if (selected.length && sourceTokens + estimatedTokens > sourceTokenBudget) break;
+    selected.push(source);
+    sourceTokens += estimatedTokens;
+  }
+  const sources = selected.join("\n\n---\n\n");
   return [
     {
       role: "system",
-      content: `${BASE_SYSTEM}
-You are given retrieved narrations. Answer only from those narrations. Do not add a ruling from memory. Separate what a report explicitly states from what follows by contextual interpretation. If reports are parallel versions of one event, explicitly identify them as separate witnesses of the same core report, name their collections, and note meaningful wording differences without counting them as unrelated events. If the evidence does not fully answer the user's practical question, state the gap plainly. Do not discuss chain grading unless the supplied text does. Use these headings: Direct answer, How the reports fit together, Limits of the evidence. Keep each section concise, but include distinct relevant reports rather than collapsing every narration into one sentence. Do not copy the same sentence or translation more than once. Do not repeat the question. If the question asks who a person is, answer identity and role before mentioning secondary details.`,
+      content: systemContent,
     },
     {
       role: "user",
-      content: `Question: ${compact(query, 1200)}\n\nRetrieved reports:\n${sources}`,
+      content: `Question: ${compactQuestion}\n\nRetrieved reports:\n${sources}`,
     },
   ];
 }

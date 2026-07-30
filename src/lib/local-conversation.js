@@ -1,3 +1,4 @@
+import { resolveBookAuthorship } from "./book-catalog.js";
 import { cleanCorpusDisplay } from "./corpus-display.js";
 
 const ENGLISH_STOP_WORDS = new Set(
@@ -7,6 +8,11 @@ const ENGLISH_STOP_WORDS = new Set(
 const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
+
+const RELIGIOUS_DOMAIN = /\b(?:ahl(?:ul| al)[-\s]?bayt|allah|islam(?:ic)?|shia|shi['’]?a|imam|imamah|ma['’]?s(?:oo|u)m|prophet|nabi|rasul|quran|sunnah|hadith|ahadith|riwaya|riwayat|aqeedah|tawhid|wilayah|walayah|fiqh|wajib|mustahab|makruh|mubah|halal|haram)\b/i;
+const RELIGIOUS_SCRIPT_DOMAIN = /(?:الله|الإسلام|اسلام|الشيعة|شیعہ|أهل البيت|اہل بیت|إمام|امام|القرآن|قرآن|حديث|حدیث|رواية|روایت|توحيد|توحید|إمامة|امامت|ولاية|ولایت|رجعة|رجعت|بداء|برزخ|قيامة|قیامت|تقليد|تقلید|اجتهاد|فقه|حلال|حرام|واجب|مستحب|مكروه|زكاة|زکات|خمس|حج|عمرة|نماز|صلاة|صوم|نكاح|نکاح|طلاق)/u;
+
+const RELIGIOUS_FOLLOW_UP = /^(?:(?:no|nah|yes|yeah|okay|ok|please)\s+)*(?:now\s+)?(?:find|show|give|bring|search(?:\s+for)?|cite|source)\s+(?:(?:me|us)\s+)?(?:(?:the|those|some|any)\s+)?(?:hadith|ahadith|narration|narrations|riwaya|riwayat|reports?|sources?)(?:\s+(?:on|about|for|it|that|this|them))?[.!?]*$/i;
 
 function normalize(value) {
   return String(value || "")
@@ -118,15 +124,22 @@ const RETRIEVAL_FACETS = [
   },
   {
     name: "method",
-    pattern: /\b(?:how\s+(?:do|should|can|did)|teach\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
+    pattern: /\b(?:how\s+(?:to|do|does|should|can|could|did|would)|how\s+(?:is|are)\b.{0,60}\b(?:done|performed|recited|made)|(?:teach|show)\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
     scriptPattern: /(?:كيف|علمني|طريقة|خطوات|كيفية|أؤدي|اصلي|أصلي|کیسے|طریقہ|سکھائیں)/u,
     strict: false,
-    terms: [],
-    resultLimit: 10,
+    terms: [
+      "description", "describe", "demonstrate", "method", "procedure", "steps", "manner",
+      "perform", "first", "then", "wash", "wipe", "recite", "bow", "prostrate",
+      "stand", "sit", "slaughter", "shave",
+    ],
+    resultLimit: 2,
     maxDirectResults: 4,
     maxFamilyMembers: 7,
     familyMinRelation: 0.46,
     maxPerChapter: 3,
+    minUniqueResults: 1,
+    maxUniqueResults: 1,
+    parallelReserve: 6,
     secondaryDirectRatio: 0.68,
   },
   {
@@ -185,7 +198,15 @@ function entityExpansion(query, normalized) {
     : { text: "", terms: [], detected: false };
 }
 
-export function buildReligiousSearchPlan(query) {
+function requestedCollection(query, manifest) {
+  const normalizedQuery = normalize(query);
+  return (manifest?.strings?.collections || [])
+    .map((collection) => ({ collection, normalized: normalize(collection) }))
+    .filter(({ normalized }) => normalized && normalizedQuery.includes(normalized))
+    .sort((left, right) => right.normalized.length - left.normalized.length)[0]?.normalized || "";
+}
+
+export function buildReligiousSearchPlan(query, manifest) {
   const original = String(query || "").trim();
   const normalized = normalize(original);
   const signsBeforeAppearance = /\b(?:signs?|events?|conditions?)\b.{0,48}\b(?:before|preceding|prior\s+to)\b.{0,32}\b(?:appearance|reappearance|advent|rise|emergence)\b/i.test(normalized)
@@ -196,19 +217,26 @@ export function buildReligiousSearchPlan(query) {
       candidate.pattern.test(normalized) || candidate.scriptPattern.test(original)
     )) || null;
   const entity = entityExpansion(original, normalized);
+  const requiredCollection = requestedCollection(original, manifest);
   const expansionParts = [original, entity.text];
 
   return {
     searchQuery: expansionParts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim(),
     entityDetected: entity.detected,
     retrievalProfile: {
-      version: 1,
+      version: 3,
       facet: facet?.name || "general",
       strictFacet: Boolean(facet?.strict),
       requiredTerms: facet?.strict ? facet.terms : [],
       boostTerms: facet?.terms || [],
       entityTerms: entity.terms,
-      resultLimit: facet?.resultLimit || 10,
+      requireEntityMatch: entity.detected,
+      requireFocusCoverage: true,
+      requireFocusFacetProximity: facet?.name === "method",
+      minimumTitleFocusFacetDensity: facet?.name === "method" ? 0.14 : 0,
+      minimumFocusCoverage: 0.6,
+      requiredCollection,
+      resultLimit: Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
       candidateLimit: 360,
@@ -233,7 +261,16 @@ export function buildReligiousSearchPlan(query) {
   };
 }
 
-function shouldRetrieveNarrations(query) {
+function corpusTermCount(query, manifest) {
+  const lexicon = new Set((manifest?.lexicon || []).map((entry) => entry[0]));
+  if (!lexicon.size) return 0;
+  return normalize(query)
+    .split(/\s+/)
+    .filter((token, index, all) => token.length > 2 && all.indexOf(token) === index && lexicon.has(token))
+    .length;
+}
+
+function shouldRetrieveNarrations(query, manifest) {
   const normalized = normalize(query);
   const explicitEvidence = /\b(?:hadith|ahadith|narration|narrations|riwaya|riwayat|report from|source for|what did (?:the )?imam|did (?:the )?imam say)\b/i.test(normalized)
     || /(?:حدیث|حديث|روایت|رواية|امام نے کیا فرمایا|قال الامام)/u.test(query);
@@ -241,12 +278,38 @@ function shouldRetrieveNarrations(query) {
 
   const practice = /\b(?:wudu|wudhu|wuzu|ablution|prayer|pray|salah|salat|namaz|fast|sawm|zakat|khums|nikah|talaq|taqiyya|taqiyyah|halal|haram|najis|tahir|purity|ghusl|tayammum)\b/i.test(normalized)
     || /(?:وضو|وضوء|نماز|صلاة|زکات|زكاة|خمس|نکاح|نكاح|تقیہ|تقية|حلال|حرام|نجس|طاهر|غسل|تيمم)/u.test(query);
-  const practicalQuestion = /\b(?:how|what|when|where|why|can|could|may|should|must|is|are|does|do|did|allowed|valid|invalid|break|invalidate|ruling)\b/i.test(normalized)
+  const practicalQuestion = /\b(?:how|what|who|when|where|why|can|could|may|should|must|is|are|does|do|did|allowed|valid|invalid|break|invalidate|ruling|author|wrote|compiled)\b/i.test(normalized)
     || /[?؟]/u.test(query);
-  return practice && practicalQuestion;
+  const inquiry = practicalQuestion
+    || /\b(?:tell|explain|find|show|give|describe|search)\b/i.test(normalized);
+  const corpusTerms = corpusTermCount(query, manifest);
+  const religiousQuestion = (RELIGIOUS_DOMAIN.test(normalized) || RELIGIOUS_SCRIPT_DOMAIN.test(query))
+    && inquiry;
+  return religiousQuestion
+    || (practice && inquiry)
+    || (corpusTerms >= 1 && (inquiry || normalized.split(/\s+/).length <= 5));
 }
 
-export function resolveLocalConversation(query, conversation, globalMemory) {
+function previousUserQuestion(conversation) {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user" || typeof message.text !== "string") continue;
+    const text = message.text.trim();
+    if (!text || RELIGIOUS_FOLLOW_UP.test(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+export function contextualizeReligiousQuery(query, conversation) {
+  const current = String(query || "").trim();
+  if (!RELIGIOUS_FOLLOW_UP.test(current)) return current;
+  const previous = previousUserQuestion(conversation);
+  return previous ? `${previous}. ${current}` : current;
+}
+
+export function resolveLocalConversation(query, conversation, globalMemory, manifest) {
   const switchedLanguage = requestedLanguage(query);
   const detectedLanguage = detectConversationLanguage(query);
   const rememberedLanguage = conversation?.memory?.language || globalMemory?.profile?.language;
@@ -255,12 +318,22 @@ export function resolveLocalConversation(query, conversation, globalMemory) {
     || detectedLanguage;
   const memoryUpdate = extractMemory(query)
     || (switchedLanguage ? { key: "language", value: switchedLanguage } : null);
-  const religiousSearch = buildReligiousSearchPlan(query);
-  if (religiousSearch.entityDetected || shouldRetrieveNarrations(query)) {
+  const contextualQuery = contextualizeReligiousQuery(query, conversation);
+  const bookInfo = resolveBookAuthorship(contextualQuery, manifest);
+  if (bookInfo) {
+    return {
+      ...bookInfo,
+      language,
+      memoryUpdate,
+    };
+  }
+  const religiousSearch = buildReligiousSearchPlan(contextualQuery, manifest);
+  if (religiousSearch.entityDetected || shouldRetrieveNarrations(contextualQuery, manifest)) {
     return {
       intent: "religious-search",
       language,
       searchQuery: religiousSearch.searchQuery,
+      synthesisQuery: contextualQuery,
       retrievalProfile: religiousSearch.retrievalProfile,
       memoryUpdate,
     };

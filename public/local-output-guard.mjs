@@ -5,6 +5,9 @@ const CODE_FRAGMENT = /(?:^|\s)(?:const|let|var|function|class|import|export|ret
 const ENGLISH_FUNCTION_WORDS = new Set(
   "a about after again all am an and any are as at be because been before being but by can could did do does doing dont for from get got had has have he her here him his how i if im in into is it its just know like may me might more my no not now of on one or our out please ready really right say see she should so some sounds than that the their them then there these they thing this to too up us was we well were what when where which who why will with would yeah yes you your youre".split(" "),
 );
+const SYNTHESIS_FRAME_WORDS = new Set(
+  "answer based collection conclusion direct evidence excerpt explicitly establish established limits narration narrations passage passages question related report reports retrieved source sources states supplied text wording".split(" "),
+);
 const NATURAL_SHORT_REPLIES = new Set(
   "yes no sure okay ok thanks welcome hello hey hi goodbye bye pizza tacos both neither true false maybe absolutely definitely probably".split(" "),
 );
@@ -25,6 +28,29 @@ export function normalizeForComparison(value) {
 
 function wordsOf(value) {
   return normalizeForComparison(value).split(/\s+/).filter(Boolean);
+}
+
+function conceptStem(word) {
+  const stemmed = String(word || "")
+    .replace(/(?:ingly|edly|ments|ment|ation|ities)$/u, "")
+    .replace(/(?:ing|ers|ied|ies|ed|es|s)$/u, "");
+  return stemmed.length >= 4 ? stemmed : word;
+}
+
+function repeatedUnsupportedConcept(answer, suppliedPrompt) {
+  const suppliedWords = new Set(wordsOf(suppliedPrompt).map(conceptStem));
+  const counts = new Map();
+  for (const word of wordsOf(answer)) {
+    if (
+      word.length < 5
+      || ENGLISH_FUNCTION_WORDS.has(word)
+      || SYNTHESIS_FRAME_WORDS.has(word)
+      || /^\d+$/u.test(word)
+    ) continue;
+    const concept = conceptStem(word);
+    counts.set(concept, (counts.get(concept) || 0) + 1);
+  }
+  return [...counts.entries()].find(([word, count]) => count >= 2 && !suppliedWords.has(word))?.[0] || "";
 }
 
 function removeRepeatedSentences(value) {
@@ -264,7 +290,7 @@ export function validateGeneratedReply(value, {
   }
 
   if (mode === "synthesis") {
-    const headings = ["direct answer", "how the reports fit together", "limits of the evidence"];
+    const headings = ["direct answer", "evidence", "limits of the evidence"];
     const normalized = normalizeForComparison(text);
     const headingCount = headings.filter((heading) => normalized.includes(heading)).length;
     const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
@@ -275,9 +301,33 @@ export function validateGeneratedReply(value, {
     if (headingCount < 2 && paragraphs.length < 2 && sentenceCount < 3) {
       return { ok: false, text: "", reason: "missing-synthesis-structure" };
     }
+    const unsupportedConcept = repeatedUnsupportedConcept(text, latestUserMessage);
+    if (unsupportedConcept) {
+      return { ok: false, text: "", reason: `unsupported-new-concept:${unsupportedConcept}` };
+    }
+    const evidence = String(latestUserMessage).split(/retrieved reports\s*:/iu).slice(1).join(" ");
+    const conclusiveSentences = text
+      .split(/(?<=[.!?])\s+|\n+/u)
+      .filter((sentence) => !(
+        /\b(?:do not|does not|cannot|can't|fails? to)\s+(?:establish|prove|show|conclude|demonstrate)\b/iu.test(sentence)
+        || /\b(?:cannot|can't)\s+be\s+concluded\b/iu.test(sentence)
+        || /\b(?:not enough|insufficient)\s+(?:evidence\s+)?(?:to\s+)?(?:establish|prove|show|conclude|demonstrate)\b/iu.test(sentence)
+        || /\bno\s+basis\s+(?:to|for)\b/iu.test(sentence)
+      ));
+    const claimsPermission = conclusiveSentences.some((sentence) => (
+      /\b(?:permissible|allowed|halal|lawful|not\s+(?:haram|forbidden|prohibited|impermissible))\b/iu.test(sentence)
+    ));
+    const claimsProhibition = conclusiveSentences.some((sentence) => (
+      /\b(?:is|are|was|were|therefore|thus)\s+(?:haram|forbidden|prohibited|impermissible|not\s+(?:permissible|allowed|halal|lawful))\b/iu.test(sentence)
+    ));
+    const evidenceSupportsPermission = /\b(?:permissible|allowed|halal|lawful|not\s+(?:haram|forbidden|prohibited)|nothing\s+wrong|no\s+objection)\b/iu.test(evidence);
+    const evidenceSupportsProhibition = /\b(?:haram|forbidden|prohibited|impermissible|not\s+(?:permissible|allowed|halal|lawful)|do\s+not|must\s+not)\b/iu.test(evidence);
+    if ((claimsPermission && !evidenceSupportsPermission) || (claimsProhibition && !evidenceSupportsProhibition)) {
+      return { ok: false, text: "", reason: "unsupported-legal-verdict" };
+    }
   }
 
-  if (mode === "elucidation" && !text.includes("{")) {
+  if ((mode === "elucidation" || mode === "query-analysis") && !text.includes("{")) {
     return { ok: false, text: "", reason: "missing-json" };
   }
 

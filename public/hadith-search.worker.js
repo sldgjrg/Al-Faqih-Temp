@@ -508,6 +508,17 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     retrievalProfile,
     limit: Math.max(120, Math.min(480, Number(retrievalProfile?.candidateLimit) || 300)),
   });
+  if (!candidates.length && !retrievalProfile?.rewritten) {
+    self.postMessage({
+      type: "rewrite-needed",
+      requestId,
+      queryDiagnostics: {
+        corrections: plan.queryCorrections || [],
+        unresolved: plan.unresolvedFocusTokens || [],
+      },
+    });
+    return;
+  }
   self.postMessage({
     type: "status",
     requestId,
@@ -548,11 +559,22 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     plan,
     candidates: expandedCandidates,
     records,
-    resultLimit: Math.max(4, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
+    resultLimit: Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
   });
+  if (!results.length && !retrievalProfile?.rewritten) {
+    self.postMessage({
+      type: "rewrite-needed",
+      requestId,
+      queryDiagnostics: {
+        corrections: plan.queryCorrections || [],
+        unresolved: plan.unresolvedFocusTokens || [],
+      },
+    });
+    return;
+  }
   const anchors = results.filter((result) => result.clusterRole !== "parallel");
   const parallels = results.filter((result) => result.clusterRole === "parallel");
-  const synthesisResults = [...anchors, ...parallels].slice(0, 8);
+  const synthesisResults = [...anchors, ...parallels].slice(0, 10);
   self.postMessage({
     type: "results",
     requestId,

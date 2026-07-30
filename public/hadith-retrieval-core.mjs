@@ -646,7 +646,11 @@ const LOGICAL_TOKENS = new Set(
 );
 
 const GENERIC_ENTITY_QUERY_TOKENS = new Set(
-  "imam prophet messenger lady say tell ask explain mean know look hadith narration report muhammad ali fatima hasan hassan husayn hussain sajjad baqir sadiq kazim rida ridha jawad hadi askari mahdi zaman qaim".split(" "),
+  "imam prophet messenger lady say tell ask explain mean know look hadith ahadith narration narrations riwaya riwayat report reports muhammad ali fatima hasan hassan husayn hussain sajjad baqir sadiq kazim rida ridha jawad hadi askari mahdi zaman qaim".split(" "),
+);
+
+const QUERY_INTENT_TOKENS = new Set(
+  "allowed allow author authorship book books cite citation compiled compiler definition evidence find forbidden haram halal how identity legal method obligatory opinion permitted permissible procedure prohibited recommendation recommended report reports ruling source sources step steps tell think thought valid validity wajib wrote written".split(" "),
 );
 
 
@@ -824,6 +828,84 @@ function dfForHash(manifest, featureHash) {
   return manifest.df[featureHash.toString(36)] || 0;
 }
 
+function boundedEditDistance(left, right, maximum) {
+  if (Math.abs(left.length - right.length) > maximum) return maximum + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    let rowMinimum = current[0];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitution = previous[rightIndex - 1]
+        + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1);
+      const value = Math.min(
+        previous[rightIndex] + 1,
+        current[rightIndex - 1] + 1,
+        substitution,
+      );
+      current.push(value);
+      rowMinimum = Math.min(rowMinimum, value);
+    }
+    if (rowMinimum > maximum) return maximum + 1;
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function fuzzyCorpusToken(token, manifest) {
+  if (!/^[a-z][a-z0-9]{2,}$/u.test(token) || !Array.isArray(manifest.lexicon)) return "";
+  const foldTransliteration = (value) => value
+    .replace(/([aeiou])\1+/g, "$1")
+    .replace(/ou/g, "u")
+    .replace(/ee/g, "i")
+    .replace(/(?:dh|th|zh|kh|gh)/g, (pair) => pair[0])
+    .replace(/q/g, "k");
+  const maximumDistance = token.length >= 6 ? 2 : 1;
+  const foldedToken = foldTransliteration(token);
+  let best = "";
+  let bestScore = 0;
+  for (const [candidate, frequency] of manifest.lexicon) {
+    if (!/^[a-z][a-z0-9]{2,}$/u.test(candidate)) continue;
+    if (candidate[0] !== token[0]) continue;
+    if (Math.abs(candidate.length - token.length) > maximumDistance) continue;
+    const foldedCandidate = foldTransliteration(candidate);
+    const rawDistance = boundedEditDistance(token, candidate, maximumDistance);
+    const foldedDistance = boundedEditDistance(foldedToken, foldedCandidate, maximumDistance);
+    if (rawDistance > maximumDistance && foldedDistance > maximumDistance) continue;
+    const rawSimilarity = 1 - rawDistance / Math.max(token.length, candidate.length);
+    const foldedSimilarity = 1 - foldedDistance / Math.max(foldedToken.length, foldedCandidate.length);
+    const similarity = Math.max(rawSimilarity, foldedSimilarity);
+    if (similarity < 0.82) continue;
+    const score = similarity + Math.min(0.035, Math.log1p(frequency) / 300);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+export function resolveQueryTokens(query, manifest) {
+  const originalTokens = tokenize(query);
+  const tokens = [];
+  const corrections = [];
+  const unresolved = [];
+  for (const token of originalTokens) {
+    if (dfForHash(manifest, hashFeature(unigramFeature(token)))) {
+      tokens.push(token);
+      continue;
+    }
+    const corrected = fuzzyCorpusToken(token, manifest);
+    if (corrected) {
+      tokens.push(corrected);
+      corrections.push([token, corrected]);
+    } else {
+      tokens.push(token);
+      unresolved.push(token);
+    }
+  }
+  return { originalTokens, tokens, corrections, unresolved };
+}
+
 function queryFeatureBaseWeight(feature) {
   if (feature.startsWith("t:")) return 1.65;
   if (feature.startsWith("b:")) return 1.25;
@@ -836,8 +918,22 @@ export function buildQueryPlan(query, manifest, retrievalProfile = {}) {
   const profile = retrievalProfile && typeof retrievalProfile === "object" ? retrievalProfile : {};
   const boostText = Array.isArray(profile.boostTerms) ? profile.boostTerms.join(" ") : "";
   const boostStrength = Math.max(0, Math.min(0.5, Number(profile.boostStrength) || (profile.strictFacet ? 0.38 : 0.16)));
-  const tokens = tokenize(query);
+  const resolvedQuery = resolveQueryTokens(query, manifest);
+  const tokens = resolvedQuery.tokens;
   const uniqueTokens = [...new Set(tokens)];
+  const originalFocusTokens = [...new Set(resolvedQuery.originalTokens.filter((token) => (
+    !QUERY_INTENT_TOKENS.has(token)
+    && !GENERIC_ENTITY_QUERY_TOKENS.has(token)
+    && !LOGICAL_TOKENS.has(token)
+  )))];
+  const correctionMap = new Map(resolvedQuery.corrections);
+  const resolvedFocusTokens = [...new Set(originalFocusTokens
+    .map((token) => correctionMap.get(token) || token)
+    .filter((token) => dfForHash(manifest, hashFeature(unigramFeature(token)))))];
+  const unresolvedFocusTokens = originalFocusTokens.filter((token) => (
+    !correctionMap.has(token)
+    && !dfForHash(manifest, hashFeature(unigramFeature(token)))
+  ));
   const boostTokens = [...new Set(tokenize(boostText))];
   const entityTokens = [...new Set(tokenize(Array.isArray(profile.entityTerms) ? profile.entityTerms.join(" ") : ""))];
   const featureWeights = new Map();
@@ -946,6 +1042,29 @@ export function buildQueryPlan(query, manifest, retrievalProfile = {}) {
   const boostFacetSourceHashes = sourceHashesForTerms(profile.boostTerms);
   const requiredFacetSourceHashes = sourceHashesForTerms(profile.requiredTerms);
   const entitySourceHashes = sourceHashesForTerms(profile.entityTerms);
+  const focusSourceHashes = new Set(
+    resolvedFocusTokens.map((token) => hashFeature(unigramFeature(token)).toString(36)),
+  );
+  const subjectSourceGroups = (Array.isArray(profile.subjectTermGroups) ? profile.subjectTermGroups : [])
+    .map((terms) => {
+      const resolved = resolveQueryTokens(String(terms || ""), manifest);
+      const subjectTokens = [...new Set(resolved.originalTokens.filter((token) => (
+        !QUERY_INTENT_TOKENS.has(token)
+        && !GENERIC_ENTITY_QUERY_TOKENS.has(token)
+        && !LOGICAL_TOKENS.has(token)
+      )))];
+      const corrections = new Map(resolved.corrections);
+      const hashes = new Set();
+      let unresolvedCount = 0;
+      for (const token of subjectTokens) {
+        const resolvedToken = corrections.get(token) || token;
+        const featureHash = hashFeature(unigramFeature(resolvedToken));
+        if (dfForHash(manifest, featureHash)) hashes.add(featureHash.toString(36));
+        else unresolvedCount += 1;
+      }
+      return { hashes, demandCount: hashes.size + unresolvedCount };
+    })
+    .filter((group) => group.demandCount > 0);
 
   const requiredImamIndex = requestedImamIndex(query, manifest);
   const shouldRequireFocus = !profile.disableFocus && uniqueTokens.length >= 3 && uniqueTokens.length <= 5;
@@ -961,6 +1080,12 @@ export function buildQueryPlan(query, manifest, retrievalProfile = {}) {
   return {
     query,
     tokens,
+    queryCorrections: resolvedQuery.corrections,
+    originalFocusTokens,
+    resolvedFocusTokens,
+    unresolvedFocusTokens,
+    focusSourceHashes,
+    focusDemandCount: focusSourceHashes.size + unresolvedFocusTokens.length,
     requiredImamIndex,
     focusSourceHash,
     uniqueTokens,
@@ -977,6 +1102,7 @@ export function buildQueryPlan(query, manifest, retrievalProfile = {}) {
     boostFacetSourceHashes,
     requiredFacetSourceHashes,
     entitySourceHashes,
+    subjectSourceGroups,
   };
 }
 
@@ -1005,6 +1131,20 @@ export function rankPassageCandidates({
   limit = 240,
 }) {
   const plan = buildQueryPlan(query, manifest, retrievalProfile);
+  if (
+    plan.retrievalProfile?.requireFocusCoverage
+    && plan.focusDemandCount > 0
+    && plan.focusSourceHashes.size === 0
+  ) {
+    return { plan, candidates: [] };
+  }
+  if (
+    plan.retrievalProfile?.requireSubjectMatch
+    && plan.subjectSourceGroups.length
+    && plan.subjectSourceGroups.every((group) => group.hashes.size === 0)
+  ) {
+    return { plan, candidates: [] };
+  }
   if (!plan.featureWeights.size) return { plan, candidates: [] };
 
   const byDocument = new Map();
@@ -1554,6 +1694,10 @@ export function rerankLoadedRecords({
       const [titleIndex, collectionIndex, authorIndex, volumeIndex, chapterIndex, imamMask] = metadata;
       const title = manifest.strings.titles[titleIndex];
       const chapter = manifest.strings.chapters[chapterIndex];
+      const collection = manifest.strings.collections[collectionIndex];
+      const requiredCollection = normalizeText(plan.retrievalProfile?.requiredCollection || "");
+      const collectionMatched = !requiredCollection
+        || normalizeText(collection).includes(requiredCollection);
       const titleEvidence = bestEvidenceWindow(tokenize(`${title} ${chapter}`), plan, manifest, 20);
       const matchedSourceSet = new Set([
         ...evidence.matchedSources,
@@ -1561,6 +1705,16 @@ export function rerankLoadedRecords({
       ]);
       const bodySourceSet = new Set(evidence.matchedSources);
       const titleSourceSet = new Set(titleEvidence.matchedSources);
+      const focusMatches = [...plan.focusSourceHashes]
+        .filter((sourceHash) => matchedSourceSet.has(sourceHash)).length;
+      const focusCoverage = plan.focusDemandCount
+        ? focusMatches / plan.focusDemandCount
+        : 1;
+      const subjectMatched = !plan.subjectSourceGroups.length
+        || plan.subjectSourceGroups.some((group) => {
+          const matches = [...group.hashes].filter((sourceHash) => matchedSourceSet.has(sourceHash)).length;
+          return matches >= Math.max(1, Math.ceil(group.demandCount * 0.66));
+        });
       const facetMatches = [...plan.boostFacetSourceHashes].filter((sourceHash) => matchedSourceSet.has(sourceHash));
       const requiredFacetMatches = [...plan.requiredFacetSourceHashes]
         .filter((sourceHash) => matchedSourceSet.has(sourceHash));
@@ -1582,6 +1736,26 @@ export function rerankLoadedRecords({
         plan,
         14,
       );
+      const titleFocusFacet = (
+        [...plan.focusSourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash))
+        && [...plan.boostFacetSourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash))
+      );
+      const titleFocusFacetMatches = new Set([
+        ...[...plan.focusSourceHashes].filter((sourceHash) => titleSourceSet.has(sourceHash)),
+        ...[...plan.boostFacetSourceHashes].filter((sourceHash) => titleSourceSet.has(sourceHash)),
+      ]).size;
+      const titleFocusFacetDensity = titleFocusFacetMatches
+        / Math.max(1, new Set(tokenize(title)).size);
+      const focusFacetProximity = !plan.focusSourceHashes.size
+        || !plan.boostFacetSourceHashes.size
+        || hasSourceProximity(
+          textTokens,
+          plan.focusSourceHashes,
+          plan.boostFacetSourceHashes,
+          plan,
+          18,
+        )
+        || titleFocusFacet;
       const facetCoverage = plan.boostFacetSourceHashes.size
         ? Math.min(1, facetMatches.length / Math.max(1, Math.min(5, plan.boostFacetSourceHashes.size)))
         : 0;
@@ -1610,7 +1784,10 @@ export function rerankLoadedRecords({
         || titleEvidence.matchedSources.includes(plan.focusSourceHash);
       const focusBoost = plan.focusSourceHash && focusMatched ? 0.18 : 0;
       const facetBoost = Math.min(0.32, facetCoverage * 0.24 + (facetMatched ? 0.1 : 0));
-      const rawScore = directScore + relationBoost + focusBoost + facetBoost;
+      const focusFacetTitleBoost = titleFocusFacet
+        ? 0.18 + Math.min(0.18, titleEvidence.density * 0.18)
+        : 0;
+      const rawScore = directScore + relationBoost + focusBoost + facetBoost + focusFacetTitleBoost;
       const strategies = [];
       if (evidence.matchedLiteral) strategies.push("literal");
       if (evidence.phraseEvidence > 0.05) strategies.push("phrase");
@@ -1632,7 +1809,7 @@ export function rerankLoadedRecords({
         relatedTo: candidate.relationTo ?? null,
         score: Math.max(0.01, Math.min(0.99, rawScore)),
         title,
-        collection: manifest.strings.collections[collectionIndex],
+        collection,
         author: manifest.strings.authors[authorIndex],
         volume: manifest.strings.volumes[volumeIndex],
         chapter,
@@ -1656,13 +1833,37 @@ export function rerankLoadedRecords({
         _facetMatched: facetMatched,
         _facetCoverage: facetCoverage,
         _facetEntityProximity: facetEntityProximity,
+        _focusFacetProximity: focusFacetProximity,
+        _titleFocusFacet: titleFocusFacet,
+        _titleFocusFacetDensity: titleFocusFacetDensity,
+        _collectionMatched: collectionMatched,
+        _focusCoverage: focusCoverage,
+        _subjectMatched: subjectMatched,
       };
     })
     .filter(Boolean)
     .filter((result) => (
       result._matchedSources > 0
+      && result._collectionMatched
+      && (!plan.retrievalProfile?.requireFocusCoverage
+        || result._focusCoverage >= Math.max(
+          0.34,
+          Math.min(1, Number(plan.retrievalProfile?.minimumFocusCoverage) || 0.6),
+        ))
+      && (!plan.retrievalProfile?.requireSubjectMatch || result._subjectMatched)
+      && (!plan.retrievalProfile?.requireFocusFacetProximity || result._focusFacetProximity)
+      && (
+        !result._titleFocusFacet
+        || result._titleFocusFacetDensity >= Math.max(
+          0,
+          Math.min(1, Number(plan.retrievalProfile?.minimumTitleFocusFacetDensity) || 0),
+        )
+      )
       && (result.familyScore < 0.42 || result._coverage >= 0.22 || result._titleCoverage >= 0.08 || result.familyScore >= 0.56)
       && (result._focusMatched || result.familyScore >= 0.56)
+      && (!plan.retrievalProfile?.requireEntityMatch
+        || result._facetEntityProximity
+        || result.familyScore >= 0.56)
       && (!plan.retrievalProfile?.strictFacet
         || (result._facetMatched && result._facetEntityProximity))
     ))
@@ -1682,7 +1883,6 @@ export function rerankLoadedRecords({
 
   const selected = selectClusteredResults(eligible, plan, resultLimit);
 
-  const best = selected[0]?.rawScore || 1;
   return selected.map(({
     rawScore,
     directScore,
@@ -1698,10 +1898,19 @@ export function rerankLoadedRecords({
     _facetMatched,
     _facetCoverage,
     _facetEntityProximity,
+    _focusFacetProximity,
+    _titleFocusFacet,
+    _titleFocusFacetDensity,
+    _collectionMatched,
+    _focusCoverage,
+    _subjectMatched,
     ...result
-  }, index) => ({
+  }) => ({
     ...result,
-    score: Math.max(0.05, Math.min(0.98, (rawScore / best) * (index === 0 ? 0.97 : 0.93))),
+    evidenceScore: rawScore,
+    evidenceTerms: _matchedTerms,
+    focusCoverage: _focusCoverage,
+    score: Math.max(0.05, Math.min(0.98, rawScore / 1.15)),
   }));
 }
 

@@ -28,6 +28,8 @@ import {
   conversationMessages,
   elucidationMessages,
   parseElucidationJson,
+  parseQueryAnalysisJson,
+  queryAnalysisMessages,
   synthesisMessages,
 } from "@/lib/local-model-prompts";
 
@@ -499,9 +501,13 @@ function ElucidationMessage({ elucidation }) {
 }
 
 function ConversationMessage({ response }) {
-  const provenance = response.modelLabel
-    ? `Local model · ${response.modelLabel}${response.device ? ` · ${response.device}` : ""}`
-    : "Local WebGPU model";
+  const provenance = response.source === "online-bibliography"
+    ? `Online bibliography · ${response.catalog || "library catalog"}`
+    : response.source === "corpus metadata" || response.source === "verified local bibliography"
+      ? `Local bibliography · ${response.source}`
+      : response.modelLabel
+        ? `Local model · ${response.modelLabel}${response.device ? ` · ${response.device}` : ""}`
+        : "Local WebGPU model";
   return (
     <div className="conversation-response" lang={response.language === "arabic" ? "ar" : undefined}>
       <ReactMarkdown>{response.text}</ReactMarkdown>
@@ -525,7 +531,7 @@ function AssistantMessage({ message }) {
           </span>
           <TypeLine>
             {message.results.length
-              ? `Retrieved ${message.results.length} closely supported narrations across ${message.clusterCount || groupNarrationResults(message.results).length} distinct report families from ${message.candidateCount} direct candidates${message.expandedCandidateCount ? ` and ${message.expandedCandidateCount - message.candidateCount} corpus-linked candidates` : ""}.`
+              ? `Retrieved ${message.results.length} ranked narrations across ${message.clusterCount || groupNarrationResults(message.results).length} distinct report families from ${message.candidateCount} direct candidates${message.expandedCandidateCount ? ` and ${message.expandedCandidateCount - message.candidateCount} corpus-linked candidates` : ""}. Relevance is not a legal verdict.`
               : "No sufficiently close narration was found with the current query and filters."}
           </TypeLine>
         </div>
@@ -785,7 +791,7 @@ export default function LocalHadithChat() {
     }
 
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=16", {
+      chatWorker = new Worker("/local-llm.worker.js?v=19", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -841,7 +847,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=16", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=19", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -871,6 +877,60 @@ export default function LocalHadithChat() {
                 message.id === data.requestId ? { ...message, status: data.message } : message) }
             : conversation));
       }
+      if (data.type === "rewrite-needed") {
+        const pending = pendingRef.current.get(data.requestId);
+        if (!pending) return;
+        setConversations((items) => items.map((conversation) =>
+          conversation.id === pending.conversationId
+            ? { ...conversation, messages: conversation.messages.map((message) =>
+                message.id === data.requestId
+                  ? { ...message, status: "Resolving spelling and the exact requested subject locally" }
+                  : message) }
+            : conversation));
+        requestLocalGeneration(
+          queryAnalysisMessages(pending.synthesisQuery || pending.query),
+          { mode: "query-analysis", maxNewTokens: 140, temperature: 0 },
+        )
+          .then((generation) => {
+            const analysis = parseQueryAnalysisJson(generation.text);
+            const retrievalProfile = {
+              ...(pending.retrievalProfile || {}),
+              rewritten: true,
+              ...(analysis
+                ? {
+                    requireSubjectMatch: true,
+                    subjectTermGroups: analysis.exactSubjects,
+                    minimumFocusCoverage: 0.45,
+                  }
+                : {}),
+            };
+            const rewrittenQuery = analysis
+              ? `${pending.retrievalQuery} ${analysis.retrievalQuery}`.replace(/\s+/g, " ").trim()
+              : pending.retrievalQuery;
+            pendingRef.current.set(data.requestId, {
+              ...pending,
+              retrievalQuery: rewrittenQuery,
+              retrievalProfile,
+            });
+            worker.postMessage({
+              type: "search",
+              requestId: data.requestId,
+              query: rewrittenQuery,
+              filters: pending.filters,
+              retrievalProfile,
+            });
+          })
+          .catch(() => {
+            const retrievalProfile = { ...(pending.retrievalProfile || {}), rewritten: true };
+            worker.postMessage({
+              type: "search",
+              requestId: data.requestId,
+              query: pending.retrievalQuery,
+              filters: pending.filters,
+              retrievalProfile,
+            });
+          });
+      }
       if (data.type === "results") {
         const pending = pendingRef.current.get(data.requestId);
         const conversationId = pending?.conversationId;
@@ -899,7 +959,7 @@ export default function LocalHadithChat() {
             : conversation));
         if (data.results.length && pending?.query) {
           const synthesisEvidence = data.synthesisResults || data.results;
-          requestLocalGeneration(synthesisMessages(pending.query, synthesisEvidence), {
+          requestLocalGeneration(synthesisMessages(pending.synthesisQuery || pending.query, synthesisEvidence), {
             mode: "synthesis",
             maxNewTokens: synthesisEvidence.length >= 6 ? 460 : 360,
             temperature: 0,
@@ -1055,9 +1115,110 @@ export default function LocalHadithChat() {
       return;
     }
 
-    const localResponse = resolveLocalConversation(query, current, globalMemory);
+    const localResponse = resolveLocalConversation(query, current, globalMemory, manifest);
     if (localResponse.memoryUpdate) {
       setGlobalMemory((memory) => applyMemoryUpdate(memory, localResponse.memoryUpdate, current.id));
+    }
+
+    if (localResponse.intent === "book-info") {
+      setConversations((items) => items.map((conversation) =>
+        conversation.id === current.id
+          ? {
+              ...conversation,
+              title: generateConversationTitle(conversation, query),
+              memory: updateConversationMemory(conversation, query, "book-info", localResponse.language),
+              messages: [
+                ...conversation.messages,
+                userMessage,
+                { id: crypto.randomUUID(), role: "assistant", conversation: localResponse },
+              ],
+            }
+          : conversation));
+      setInput("");
+      return;
+    }
+
+    if (localResponse.intent === "book-lookup") {
+      const lookupMessageId = crypto.randomUUID();
+      setConversations((items) => items.map((conversation) =>
+        conversation.id === current.id
+          ? {
+              ...conversation,
+              title: generateConversationTitle(conversation, query),
+              memory: updateConversationMemory(conversation, query, "book-lookup", localResponse.language),
+              messages: [
+                ...conversation.messages,
+                userMessage,
+                {
+                  id: lookupMessageId,
+                  role: "assistant",
+                  loading: true,
+                  status: "Checking online library catalogs for this title",
+                },
+              ],
+            }
+          : conversation));
+      setInput("");
+      try {
+        const response = await fetch("/api/book-lookup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query: localResponse.lookupQuery || query }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.found) {
+          throw new Error(payload?.error || "No verified online bibliography result was found.");
+        }
+        const safeTitle = String(payload.title || "").replace(/[*_[\]`<>]/g, "");
+        const safeAuthors = (payload.authors || [])
+          .map((author) => String(author).replace(/[*_[\]`<>]/g, ""))
+          .join(", ");
+        const safeUrl = /^https:\/\/(?:openlibrary\.org|(?:books|www)\.google\.[^/]+)\//i.test(payload.sourceUrl || "")
+          ? payload.sourceUrl
+          : "";
+        const corroboration = (payload.corroboratedBy || []).length > 1
+          ? ` The same title-author entry was found in ${payload.corroboratedBy.join(" and ")}.`
+          : "";
+        const text = `${safeTitle} is cataloged under ${safeAuthors}.${corroboration}${safeUrl ? ` [Open the ${payload.catalog} record](${safeUrl}).` : ""}`;
+        setConversations((items) => items.map((conversation) =>
+          conversation.id === current.id
+            ? { ...conversation, messages: conversation.messages.map((message) =>
+                message.id === lookupMessageId
+                  ? {
+                      id: lookupMessageId,
+                      role: "assistant",
+                      conversation: {
+                        intent: "book-info",
+                        known: true,
+                        language: localResponse.language,
+                        text,
+                        source: "online-bibliography",
+                        catalog: payload.catalog,
+                      },
+                    }
+                  : message) }
+            : conversation));
+      } catch (error) {
+        setConversations((items) => items.map((conversation) =>
+          conversation.id === current.id
+            ? { ...conversation, messages: conversation.messages.map((message) =>
+                message.id === lookupMessageId
+                  ? {
+                      id: lookupMessageId,
+                      role: "assistant",
+                      conversation: {
+                        intent: "book-info",
+                        known: false,
+                        language: localResponse.language,
+                        text: `I could not verify that title in either the local bibliography or the online library catalogs. ${error instanceof Error ? error.message : ""}`.trim(),
+                        source: "online-bibliography",
+                        catalog: "lookup attempted",
+                      },
+                    }
+                  : message) }
+            : conversation));
+      }
+      return;
     }
 
     if (localResponse.intent === "local-llm") {
@@ -1149,9 +1310,11 @@ export default function LocalHadithChat() {
     pendingRef.current.set(requestId, {
       conversationId: current.id,
       query,
+      synthesisQuery: localResponse.synthesisQuery || query,
       retrievalQuery,
       retrievalProfile: localResponse.retrievalProfile || null,
       language: localResponse.language,
+      filters,
     });
     setConversations((items) => items.map((conversation) =>
       conversation.id === current.id

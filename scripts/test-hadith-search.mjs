@@ -45,7 +45,7 @@ async function loadCandidateRecords(candidates) {
   return records;
 }
 
-async function search(query, { resultLimit = 5, filters } = {}) {
+async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}) {
   const { plan, candidates } = rankPassageCandidates({
     manifest,
     passageHashes,
@@ -54,6 +54,7 @@ async function search(query, { resultLimit = 5, filters } = {}) {
     passageLengths,
     query,
     filters,
+    retrievalProfile,
     limit: 240,
   });
   const directRecords = await loadCandidateRecords(candidates);
