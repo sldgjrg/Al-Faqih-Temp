@@ -26,7 +26,9 @@ import {
   updateConversationMemory,
 } from "@/lib/local-conversation";
 import {
+  biographicalEvidenceSynthesis,
   conversationMessages,
+  definitionEvidenceSynthesis,
   elucidationMessages,
   methodEvidenceSynthesis,
   parseElucidationJson,
@@ -850,7 +852,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=27", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=28", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -936,7 +938,16 @@ export default function LocalHadithChat() {
         const timeSynthesis = data.results.length && pending?.retrievalProfile?.facet === "time-definition"
           ? timeDefinitionEvidenceSynthesis(synthesisEvidence)
           : "";
-        const sourceSynthesis = methodSynthesis || timeSynthesis;
+        const definitionSynthesis = data.results.length && pending?.retrievalProfile?.facet === "definition"
+          ? definitionEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const biographicalSynthesis = data.results.length && pending?.retrievalProfile?.facet === "biographical-event"
+          ? biographicalEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const sourceSynthesis = methodSynthesis
+          || timeSynthesis
+          || definitionSynthesis
+          || biographicalSynthesis;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
           conversation.id === conversationId

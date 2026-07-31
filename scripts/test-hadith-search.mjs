@@ -212,16 +212,23 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
       const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
       const secondary = await search(secondaryQuery, {
-      resultLimit: isTimingEvidence ? 8 : 5,
+      resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" ? 8 : 5,
       filters,
       retrievalProfile: {
         ...retrievalProfile,
         secondaryQuery: "",
         secondaryQueries: [],
-        boostTerms: isTimingEvidence ? [] : secondaryQuery.split(/\s+/).filter(Boolean),
+        boostTerms: isTimingEvidence
+          ? []
+          : retrievalProfile?.facet === "definition"
+            ? [
+                ...(Array.isArray(retrievalProfile?.boostTerms) ? retrievalProfile.boostTerms : []),
+                ...secondaryQuery.split(/\s+/).filter(Boolean),
+              ]
+            : secondaryQuery.split(/\s+/).filter(Boolean),
         requireSubjectMatch: isTimingEvidence ? false : true,
         subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
-        minimumSubjectCoverage: 0.5,
+        minimumSubjectCoverage: retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         requireFocusCoverage: isTimingEvidence ? false : true,
         minimumFocusCoverage: 0.34,
         disableFocus: false,

@@ -7,6 +7,8 @@ import {
 } from "../src/lib/local-conversation.js";
 import { cleanCorpusDisplay, cleanCorpusMarkdown } from "../src/lib/corpus-display.js";
 import {
+  biographicalEvidenceSynthesis,
+  definitionEvidenceSynthesis,
   methodEvidenceSynthesis,
   parseQueryAnalysisJson,
   synthesisMessages,
@@ -177,13 +179,46 @@ assert.ok(
   "taqlid must return a report that directly names the subject",
 );
 
-for (const query of ["what is ruh al quddus", "zikre aliyun ibadah"]) {
-  assert.equal(
-    resolveLocalConversation(query, { messages: [] }, {}, manifest).retrievalProfile.needsQueryAnalysis,
-    true,
-    `${query} must use generic semantic decomposition when the exact phrase is unfamiliar`,
-  );
-}
+const fastRuhRoute = resolveLocalConversation(
+  "what is ruh ul qudus",
+  { messages: [] },
+  {},
+  manifest,
+);
+assert.equal(fastRuhRoute.retrievalProfile.facet, "definition");
+assert.equal(fastRuhRoute.retrievalProfile.needsQueryAnalysis, false);
+assert.equal(fastRuhRoute.searchQuery, "holy spirit");
+assert.ok(
+  fastRuhRoute.retrievalProfile.secondaryQueries.some((query) => /spirit.*greater.*angel/i.test(query)),
+  "a Roman-Arabic definition must compose a translated definition-evidence lane",
+);
+assert.equal(
+  resolveLocalConversation("zikre aliyun ibadah", { messages: [] }, {}, manifest).retrievalProfile.needsQueryAnalysis,
+  true,
+  "an unfamiliar quotation request without a compositional gloss must still use semantic decomposition",
+);
+
+const fastRuh = await routedSearch("what is ruh ul qudus");
+assert.ok(
+  fastRuh.results.slice(0, 6).some((result) => result.link.includes("/1/4/93/1"))
+    && fastRuh.results.some((result) => result.link.includes("/1/4/55/"))
+    && fastRuh.results.some((result) => result.link.includes("/1/4/56/")),
+  "Ruh ul-Qudus must return the greater-than-Jibril report and the chapters describing its qualities",
+);
+const fastRuhSynthesis = definitionEvidenceSynthesis(fastRuh.results);
+assert.match(fastRuhSynthesis, /creature|greater than|spirit/i);
+
+const askariBirth = await routedSearch("how and when was imam askari born");
+assert.equal(askariBirth.route.retrievalProfile.facet, "biographical-event");
+assert.equal(askariBirth.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(askariBirth.results[0]?.link.includes("/1/4/124/0"));
+assert.ok(askariBirth.results.slice(0, 3).some((result) => result.link.includes("/1/4/124/1")));
+assert.ok(
+  askariBirth.results.every((result) => result.link.includes("/1/4/124/")),
+  "a named Imam's birth question must stay within that Imam's matching biographical chapter",
+);
+const askariSynthesis = biographicalEvidenceSynthesis(askariBirth.results);
+assert.match(askariSynthesis, /born|month|year/i);
 
 const ruh = await analyzedSearch("what is ruh al quddus", {
   retrievalQuery: "Ruh al-Qudus Holy Spirit spirit permanently with the Imams",

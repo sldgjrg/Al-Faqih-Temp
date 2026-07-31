@@ -751,13 +751,20 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         secondaryQueries: [],
         // Score each evidence role by its own vocabulary and require its
         // subject anchor so broad relation words cannot promote an unrelated
-        boostTerms: isTimingEvidence ? [] : secondaryQuery.split(/\s+/).filter(Boolean),
+        boostTerms: isTimingEvidence
+          ? []
+          : retrievalProfile?.facet === "definition"
+            ? [
+                ...(Array.isArray(retrievalProfile?.boostTerms) ? retrievalProfile.boostTerms : []),
+                ...secondaryQuery.split(/\s+/).filter(Boolean),
+              ]
+            : secondaryQuery.split(/\s+/).filter(Boolean),
         // Timing reports often state the observable sign without repeating
         // the prayer's English name (for example, a white horizontal dawn
         // description). The timing query itself remains the focus gate.
         requireSubjectMatch: isTimingEvidence ? false : true,
         subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
-        minimumSubjectCoverage: 0.5,
+        minimumSubjectCoverage: retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         requireFocusCoverage: isTimingEvidence ? false : true,
         minimumFocusCoverage: 0.34,
         disableFocus: false,
@@ -784,7 +791,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         plan: secondaryRanked.plan,
         candidates: secondaryRanked.candidates,
         records: secondaryRecords,
-        resultLimit: 5,
+        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" ? 8 : 5,
       }).map((result) => ({ ...result, evidenceRole })));
     }
     const supplementalResults = [];

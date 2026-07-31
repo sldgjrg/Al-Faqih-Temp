@@ -653,6 +653,8 @@ const QUERY_INTENT_TOKENS = new Set(
   "allowed allow author authorship book books cite citation compiled compiler definition evidence find forbidden haram halal how identity legal method obligatory opinion permitted permissible procedure prohibited recommendation recommended report reports ruling source sources step steps tell think thought valid validity wajib wrote written".split(" "),
 );
 
+const TITLE_ENTITY_STOP_WORDS = new Set("the abu ibn bin".split(" "));
+
 
 const IMAM_QUERY_ALIASES = [
   ["Prophet Muhammad", /\b(?:prophet muhammad|messenger of allah|rasul(?:ullah)?|holy prophet)\b/u],
@@ -682,6 +684,7 @@ function requestedImamIndex(query, manifest) {
 }
 
 const IRREGULAR_LEMMAS = new Map(Object.entries({
+  born: "birth",
   fell: "fall",
   fallen: "fall",
   forgot: "forget",
@@ -1700,6 +1703,17 @@ export function rerankLoadedRecords({
       const title = manifest.strings.titles[titleIndex];
       const chapter = manifest.strings.chapters[chapterIndex];
       const collection = manifest.strings.collections[collectionIndex];
+      const requiredTitleEntityTerms = normalizeText(
+        plan.retrievalProfile?.requiredTitlePhrase || "",
+      ).split(/\s+/).filter((token) => (
+        token.length > 2
+        && !TITLE_ENTITY_STOP_WORDS.has(token)
+      ));
+      const normalizedTitleTerms = new Set(normalizeText(`${title} ${chapter}`).split(/\s+/));
+      const titleEntityCoverage = requiredTitleEntityTerms.length
+        ? requiredTitleEntityTerms.filter((token) => normalizedTitleTerms.has(token)).length
+          / requiredTitleEntityTerms.length
+        : 1;
       const requiredCollection = normalizeText(plan.retrievalProfile?.requiredCollection || "");
       const collectionMatched = !requiredCollection
         || normalizeText(collection).includes(requiredCollection);
@@ -1737,6 +1751,9 @@ export function rerankLoadedRecords({
         || [...plan.entitySourceHashes].some((sourceHash) => bodySourceSet.has(sourceHash));
       const titleEntityMatched = !plan.entitySourceHashes.size
         || [...plan.entitySourceHashes].some((sourceHash) => titleSourceSet.has(sourceHash));
+      const metadataEntityMatched = plan.requiredImamIndex >= 0
+        && Boolean(imamMask & (1 << plan.requiredImamIndex));
+      const entityMatched = bodyEntityMatched || titleEntityMatched || metadataEntityMatched;
       const trustedEntityTitle = /(?:imam.{0,20}(?:mahdi|time)|master.{0,12}age|al[- ]?qa[’'`]?im|qaim|صاحب الزمان|القائم)/iu.test(`${title} ${chapter}`);
       const closeEntityFacet = hasSourceProximity(
         textTokens,
@@ -1841,6 +1858,8 @@ export function rerankLoadedRecords({
         _focusMatched: focusMatched,
         _facetMatched: facetMatched,
         _facetCoverage: facetCoverage,
+        _entityMatched: entityMatched,
+        _titleEntityCoverage: titleEntityCoverage,
         _facetEntityProximity: facetEntityProximity,
         _focusFacetProximity: focusFacetProximity,
         _titleFocusFacet: titleFocusFacet,
@@ -1871,8 +1890,13 @@ export function rerankLoadedRecords({
       && (result.familyScore < 0.42 || result._coverage >= 0.22 || result._titleCoverage >= 0.08 || result.familyScore >= 0.56)
       && (result._focusMatched || result.familyScore >= 0.56)
       && (!plan.retrievalProfile?.requireEntityMatch
-        || result._facetEntityProximity
+        || result._entityMatched
         || result.familyScore >= 0.56)
+      && (!plan.retrievalProfile?.requiredTitlePhrase
+        || result._titleEntityCoverage >= Math.max(
+          0.34,
+          Math.min(1, Number(plan.retrievalProfile?.minimumTitleEntityCoverage) || 0.66),
+        ))
       && (!plan.retrievalProfile?.strictFacet
         || (result._facetMatched && result._facetEntityProximity))
     ))

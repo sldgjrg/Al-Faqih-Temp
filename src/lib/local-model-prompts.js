@@ -321,6 +321,91 @@ export function timeDefinitionEvidenceSynthesis(results) {
   ].join("\n");
 }
 
+function strongestEvidence(results, patterns) {
+  return (Array.isArray(results) ? results : [])
+    .map((result, index) => {
+      const text = `${result?.title || ""} ${result?.chapter || ""} ${result?.text || ""}`;
+      const score = patterns.reduce(
+        (total, pattern) => total + (pattern.test(text) ? 1 : 0),
+        0,
+      );
+      return { result, index, score };
+    })
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0]?.result;
+}
+
+export function definitionEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const direct = strongestEvidence(available, [
+    /\bis a creature\b/i,
+    /\bgreater than\b/i,
+    /\b(?:different|other) from\b/i,
+    /\b(?:with|accompan(?:y|ies|ied)) the (?:prophet|messenger|imams?)\b/i,
+    /\b(?:through|with) (?:the )?(?:holy )?spirit\b/i,
+    /\bdoes not (?:sleep|become unaware|trifle)\b/i,
+  ]) || available[0];
+  if (!direct) return "";
+  const reportNumber = available.indexOf(direct) + 1;
+  const translation = publishedTranslation(direct.text, [
+    "is a creature", "greater than", "different from", "angel", "with the imams",
+    "through the holy spirit", "protects", "knowledge", "does not sleep",
+  ]);
+  return [
+    "## Direct answer",
+    "",
+    `Report ${reportNumber} gives the clearest retrieved description in its published translation:`,
+    "",
+    translation
+      .split(/\n+/)
+      .map((line) => `> ${line}`)
+      .join("\n>"),
+    "",
+    "## Evidence",
+    "",
+    `Report ${reportNumber}, ${direct.collection}, “${direct.chapter || direct.title}.” The displayed reports below provide the other retrieved descriptions and transmissions.`,
+    "",
+    "## Limits of the evidence",
+    "",
+    "This reproduces what the retrieved narrations say; it does not add a chain grade or identify unstated details.",
+  ].join("\n");
+}
+
+export function biographicalEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const direct = strongestEvidence(available, [
+    /\bwas born\b/i,
+    /\bborn in the month\b/i,
+    /\bin the year\b/i,
+    /\b(?:his|her) mother\b/i,
+    /\bat the age of\b/i,
+    /\b(?:died|passed away|martyred)\b/i,
+  ]) || available[0];
+  if (!direct) return "";
+  const reportNumber = available.indexOf(direct) + 1;
+  const translation = publishedTranslation(direct.text, [
+    "was born", "born in the month", "in the year", "mother", "age", "died",
+    "passed away", "martyred",
+  ]);
+  return [
+    "## Direct answer",
+    "",
+    `Report ${reportNumber} supplies the clearest retrieved biographical details:`,
+    "",
+    translation
+      .split(/\n+/)
+      .map((line) => `> ${line}`)
+      .join("\n>"),
+    "",
+    "## Evidence",
+    "",
+    `Report ${reportNumber}, ${direct.collection}, “${direct.chapter || direct.title}.” The additional displayed reports are from the same requested biographical subject.`,
+    "",
+    "## Limits of the evidence",
+    "",
+    "This answer preserves the dates and alternatives stated by the retrieved corpus translation without reconciling them from outside sources.",
+  ].join("\n");
+}
+
 function resultSource(result, index) {
   return [
     `REPORT ${index + 1}`,

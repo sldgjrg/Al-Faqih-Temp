@@ -11,6 +11,69 @@ const GENERIC_QUERY_WORDS = new Set(
 
 const CORPUS_VOCABULARY_CACHE = new WeakMap();
 
+// These are word-level glosses, not query-specific answers. They let the
+// retriever compose an English evidence query from common Roman-Arabic
+// vocabulary even when a published translation does not preserve the
+// transliterated wording.
+const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
+  aql: "intellect",
+  akhlaq: "character",
+  akhirah: "hereafter",
+  barzakh: "intermediate realm",
+  dua: "supplication",
+  fajr: "dawn",
+  ghusl: "ritual bath",
+  hayat: "life",
+  ilm: "knowledge",
+  imamah: "leadership",
+  najasah: "impurity",
+  najis: "impure",
+  quddus: "holy",
+  qudus: "holy",
+  rooh: "spirit",
+  rouh: "spirit",
+  ruh: "spirit",
+  salah: "prayer",
+  salat: "prayer",
+  sawm: "fasting",
+  taqwa: "piety",
+  taharah: "purity",
+  tawhid: "oneness",
+  wafat: "death",
+  wilayah: "authority",
+  wiladah: "birth",
+  wilayat: "authority",
+  zakat: "alms",
+}));
+
+const ROMAN_ARABIC_CONNECTORS = new Set(
+  "al el e i ul ud us as ash ar ur uz".split(" "),
+);
+
+const ENGLISH_PRENOMINAL_ADJECTIVES = new Set(
+  "holy sacred true false lawful unlawful pure impure spiritual physical divine eternal final first last major minor".split(" "),
+);
+
+// Corpus translations frequently identify an Imam by a kunya and lineage
+// while users use the familiar epithet. Keep those names as entity knowledge
+// so every relation (birth, sayings, appearance, death, and so on) benefits.
+const IMAM_NAME_GLOSSES = new Map(Object.entries({
+  ali: "Amir al-Mu'minin Ali ibn Abi Talib",
+  hasan: "Abu Muhammad al-Hasan ibn Ali",
+  hassan: "Abu Muhammad al-Hassan ibn Ali",
+  husayn: "Abu Abdullah al-Husayn ibn Ali",
+  hussain: "Abu Abdullah al-Husayn ibn Ali",
+  sajjad: "Ali ibn al-Husayn Zayn al-Abidin",
+  baqir: "Abu Jafar Muhammad ibn Ali",
+  sadiq: "Abu Abdullah Jafar ibn Muhammad",
+  kazim: "Abu al-Hassan Musa ibn Jafar",
+  rida: "Abu al-Hassan Ali ibn Musa al-Rida",
+  ridha: "Abu al-Hassan Ali ibn Musa al-Ridha",
+  jawad: "Abu Jafar Muhammad ibn Ali the Second",
+  hadi: "Abu al-Hassan Ali ibn Muhammad",
+  askari: "Abu Muhammad al-Hassan ibn Ali",
+}));
+
 const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
@@ -129,6 +192,46 @@ const RETRIEVAL_FACETS = [
     disableFocus: true,
   },
   {
+    name: "biographical-event",
+    pattern: /\b(?:(?:when|where|how)\b.{0,72}\b(?:born|birth|died|death|martyred|martyrdom|passed\s+away)|(?:birth|born|death|died|martyrdom)\s+(?:of|date|place|year|month|age))\b/i,
+    scriptPattern: /(?:ولادت|پیدائش|وفات|شہادت|ولد|ولادة|توفي|وفاة|استشهد|شهادة)/u,
+    strict: false,
+    terms: [
+      "birth", "born", "month", "year", "date", "place", "mother", "father",
+      "age", "died", "death", "passed away", "life", "character", "virtue",
+    ],
+    resultLimit: 8,
+    maxDirectResults: 7,
+    maxFamilyMembers: 5,
+    maxPerChapter: 4,
+    minUniqueResults: 2,
+    maxUniqueResults: 6,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.38,
+    relatedFloorRatio: 0.3,
+  },
+  {
+    name: "definition",
+    pattern: /\b(?:what\s+(?:is|are|was|were)|what\s+does\b.{0,48}\bmean|define|definition|meaning\s+of|explain\s+what)\b/i,
+    scriptPattern: /(?:ما هو|ما هي|ماذا يعني|تعريف|معنى|کیا ہے|کیا مطلب|معنی)/u,
+    strict: false,
+    terms: [
+      "definition", "means", "meaning", "is a creature", "described", "greater than",
+      "angel", "different from", "accompanies", "with", "through", "protects", "knowledge",
+      "does not sleep",
+    ],
+    resultLimit: 10,
+    maxDirectResults: 8,
+    maxFamilyMembers: 5,
+    maxPerChapter: 4,
+    minUniqueResults: 3,
+    maxUniqueResults: 8,
+    secondaryPromotionLimit: 6,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.4,
+    relatedFloorRatio: 0.32,
+  },
+  {
     name: "method",
     pattern: /\b(?:how\s+(?:to|do|does|should|can|could|did|would)|how\b.{0,60}\b(?:done|performed|recited|made)|(?:teach|show)\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
     scriptPattern: /(?:كيف|علمني|طريقة|خطوات|كيفية|أؤدي|اصلي|أصلي|کیسے|طریقہ|سکھائیں)/u,
@@ -215,9 +318,25 @@ function entityExpansion(query, normalized) {
       detected: true,
     };
   }
-  const namedImam = normalized.match(/\b(?:who\s+(?:is|was)\s+|tell\s+me\s+about\s+)?imam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})/iu);
-  return namedImam
-    ? { text: "", terms: [namedImam[1]], detected: true }
+  const namedImam = normalized.match(/\bimam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,4})/iu);
+  if (!namedImam) return { text: "", terms: [], detected: false };
+  const relationBoundaries = new Set(
+    "about appearance born birth die died death do does did look looks looked mean means rule ruled say said when where why how was were is are can could should".split(" "),
+  );
+  const entityTokens = [];
+  for (const token of namedImam[1].split(/\s+/).filter(Boolean)) {
+    if (relationBoundaries.has(token)) break;
+    entityTokens.push(token);
+  }
+  const entityName = entityTokens.slice(0, 3).join(" ");
+  const aliasKey = entityTokens.filter((token) => token !== "al").at(-1) || "";
+  const corpusName = IMAM_NAME_GLOSSES.get(aliasKey) || "";
+  return entityName
+    ? {
+        text: corpusName,
+        terms: corpusName ? [corpusName, entityName] : [entityName],
+        detected: true,
+      }
     : { text: "", terms: [], detected: false };
 }
 
@@ -229,10 +348,11 @@ function requestedCollection(query, manifest) {
     .sort((left, right) => right.normalized.length - left.normalized.length)[0]?.normalized || "";
 }
 
-function shouldAnalyzeQuery(original, normalized, facet, manifest) {
+function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries = []) {
   const wordCount = normalized.split(/\s+/).filter(Boolean).length;
   const knownCorpusTerms = corpusTermCount(original, manifest);
   if (facet?.name === "time-definition") return true;
+  if (glossaryQueries.length || facet?.name === "biographical-event") return false;
   if (facet?.name === "method") {
     // Short procedure requests stay on the retrieval fast path. If their
     // first hit is only an exception or a special case, the worker expands
@@ -285,6 +405,37 @@ function foldTransliteration(value) {
     .replace(/h$/g, "");
 }
 
+function romanArabicGlossQueries(query) {
+  const chunks = [];
+  let glossCount = 0;
+  for (const token of normalize(query).replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/)) {
+    if (!token || ENGLISH_STOP_WORDS.has(token) || ROMAN_ARABIC_CONNECTORS.has(token)) continue;
+    let gloss = ROMAN_ARABIC_GLOSSES.get(token);
+    if (!gloss) {
+      const folded = foldTransliteration(token);
+      gloss = [...ROMAN_ARABIC_GLOSSES]
+        .find(([candidate]) => foldTransliteration(candidate) === folded)?.[1];
+    }
+    if (gloss) glossCount += 1;
+    chunks.push(gloss || token);
+  }
+  if (!glossCount || !chunks.length) return [];
+  const variants = [];
+  if (
+    chunks.length >= 2
+    && chunks.length <= 3
+    && ENGLISH_PRENOMINAL_ADJECTIVES.has(chunks.at(-1).split(/\s+/)[0])
+  ) {
+    variants.push([chunks.at(-1), ...chunks.slice(0, -1)].join(" "));
+  }
+  variants.push(chunks.join(" "));
+  return variants.filter((entry, index, all) => (
+    entry
+    && entry !== normalize(query)
+    && all.indexOf(entry) === index
+  )).slice(0, 3);
+}
+
 function corpusVocabulary(manifest) {
   if (!manifest || typeof manifest !== "object") {
     return { exact: new Set(), folded: new Set() };
@@ -327,21 +478,36 @@ function hasFrequentCorpusAnchor(query, manifest, intentTerms = []) {
 export function buildReligiousSearchPlan(query, manifest) {
   const original = String(query || "").trim();
   const normalized = normalize(original);
+  const glossaryQueries = romanArabicGlossQueries(original);
   const signsBeforeAppearance = /\b(?:signs?|events?|conditions?)\b.{0,48}\b(?:before|preceding|prior\s+to)\b.{0,32}\b(?:appearance|reappearance|advent|rise|emergence)\b/i.test(normalized)
     || /(?:علامات|أحداث).{0,30}(?:قبل|تسبق).{0,24}(?:الظهور|الخروج)/u.test(original);
+  const biographicalFacet = RETRIEVAL_FACETS.find((candidate) => candidate.name === "biographical-event");
+  const asksForBiographicalEvent = biographicalFacet.pattern.test(normalized)
+    || biographicalFacet.scriptPattern.test(original);
   const timeDefinitionFacet = RETRIEVAL_FACETS.find((candidate) => candidate.name === "time-definition");
   const asksForTimeBoundary = timeDefinitionFacet.pattern.test(normalized)
     || timeDefinitionFacet.scriptPattern.test(original);
   const facet = signsBeforeAppearance
     ? RETRIEVAL_FACETS.find((candidate) => candidate.name === "signs-events")
-    : asksForTimeBoundary
-      ? timeDefinitionFacet
-      : RETRIEVAL_FACETS.find((candidate) => (
-      candidate.pattern.test(normalized) || candidate.scriptPattern.test(original)
-      )) || null;
+    : asksForBiographicalEvent
+      ? biographicalFacet
+      : asksForTimeBoundary
+        ? timeDefinitionFacet
+        : RETRIEVAL_FACETS.find((candidate) => (
+        candidate.pattern.test(normalized) || candidate.scriptPattern.test(original)
+        )) || null;
   const entity = entityExpansion(original, normalized);
   const requiredCollection = requestedCollection(original, manifest);
-  const expansionParts = [original, entity.text];
+  const semanticGlossQuery = glossaryQueries[0] || "";
+  const semanticGlossTokens = semanticGlossQuery.split(/\s+/).filter(Boolean);
+  const semanticHeadTerm = semanticGlossTokens.length > 1
+    && ENGLISH_PRENOMINAL_ADJECTIVES.has(semanticGlossTokens[0])
+    ? semanticGlossTokens.at(-1)
+    : semanticGlossTokens[0] || "";
+  const definitionEvidenceQuery = semanticHeadTerm && facet?.name === "definition"
+    ? `${semanticHeadTerm} creature greater than angel accompanies protects knowledge`
+    : "";
+  const expansionParts = [semanticGlossQuery || original, entity.text];
   const expandMethodContext = facet?.name === "method"
     && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
   const methodIntentTerms = new Set((facet?.terms || [])
@@ -359,7 +525,8 @@ export function buildReligiousSearchPlan(query, manifest) {
     retrievalProfile: {
       version: 3,
       facet: facet?.name || "general",
-      needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest),
+      needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries),
+      semanticGlossExpansion: glossaryQueries.length > 0,
       expandMethodContext,
       methodSubjectTerms,
       strictFacet: Boolean(facet?.strict),
@@ -367,14 +534,18 @@ export function buildReligiousSearchPlan(query, manifest) {
       boostTerms: facet?.terms || [],
       entityTerms: entity.terms,
       requireEntityMatch: entity.detected,
+      requiredTitlePhrase: facet?.name === "biographical-event" ? entity.text : "",
+      minimumTitleEntityCoverage: 0.66,
       requireFocusCoverage: !expandMethodContext,
       requireFocusFacetProximity: (facet?.name === "method" && !expandMethodContext) || facet?.name === "time-definition",
       minimumTitleFocusFacetDensity: facet?.name === "method" || facet?.name === "time-definition" ? 0.14 : 0,
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
-      secondaryQueries: [],
-      secondaryBoostTerms: [],
+      secondaryQueries: definitionEvidenceQuery ? [definitionEvidenceQuery] : [],
+      secondaryBoostTerms: definitionEvidenceQuery.split(/\s+/).filter(Boolean),
+      evidenceRoles: definitionEvidenceQuery ? ["definition-detail"] : [],
+      evidenceQuerySubjects: definitionEvidenceQuery ? [[semanticHeadTerm]] : [],
       resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
@@ -396,7 +567,9 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: 4,
+      secondaryPromotionLimit: definitionEvidenceQuery
+        ? 6
+        : (facet?.secondaryPromotionLimit || 4),
     },
   };
 }
@@ -504,6 +677,7 @@ function shouldRetrieveNarrations(query, manifest) {
   const explicitEvidence = /\b(?:hadith|ahadith|narration|narrations|riwaya|riwayat|report from|source for|what did (?:the )?imam|did (?:the )?imam say)\b/i.test(normalized)
     || /(?:حدیث|حديث|روایت|رواية|امام نے کیا فرمایا|قال الامام)/u.test(query);
   if (explicitEvidence) return true;
+  if (romanArabicGlossQueries(query).length) return true;
 
   const practice = /\b(?:wudu|wudhu|wuzu|ablution|prayer|pray|salah|salat|namaz|fast|sawm|zakat|khums|nikah|talaq|taqiyya|taqiyyah|halal|haram|najis|tahir|purity|ghusl|tayammum)\b/i.test(normalized)
     || /(?:وضو|وضوء|نماز|صلاة|زکات|زكاة|خمس|نکاح|نكاح|تقیہ|تقية|حلال|حرام|نجس|طاهر|غسل|تيمم)/u.test(query);
