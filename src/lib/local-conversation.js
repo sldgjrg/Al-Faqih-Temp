@@ -294,6 +294,39 @@ const RETRIEVAL_FACETS = [
     relatedFloorRatio: 0.58,
   },
   {
+    name: "virtues",
+    pattern: /\b(?:praise|praised|prasie|priase|virtues?|merits?|qualities|commend(?:ation|ed)?|in\s+praise\s+of|what\s+has\s+been\s+said\s+about)\b/i,
+    scriptPattern: /(?:ÙØ¶Ø§Ø¦Ù„|Ù…Ù†Ø§Ù‚Ø¨|Ù…Ø¯Ø­|Ù…Ø¯ÙŠØ­|ØµÙØ§Øª|Ù…Ø­Ø§Ø³Ù†)/u,
+    strict: false,
+    terms: [
+      "praise", "praised", "virtue", "virtues", "merit", "merits", "qualities",
+      "love", "faith", "piety", "devotion", "our shia", "created from clay",
+    ],
+    resultLimit: 10,
+    maxDirectResults: 8,
+    maxFamilyMembers: 6,
+    maxPerChapter: 4,
+    disableFocus: true,
+    secondaryDirectRatio: 0.64,
+    directFloorRatio: 0.4,
+    relatedFloorRatio: 0.32,
+  },
+  {
+    name: "importance",
+    pattern: /\b(?:how\s+important|importance|significance|significant|essential|necessity|why\s+is\s+.+\s+important)\b/i,
+    scriptPattern: /(?:Ø£Ù‡Ù…ÙŠØ©|Ù…Ù‡Ù…|Ø¶Ø±ÙˆØ±Ø©|ÙˆØ¬ÙˆØ¨)/u,
+    strict: false,
+    terms: ["importance", "significance", "important", "religion", "faith", "piety", "necessity", "denial"],
+    resultLimit: 10,
+    maxDirectResults: 7,
+    maxFamilyMembers: 6,
+    maxPerChapter: 4,
+    disableFocus: true,
+    secondaryDirectRatio: 0.68,
+    directFloorRatio: 0.4,
+    relatedFloorRatio: 0.32,
+  },
+  {
     name: "legal-practical",
     pattern: /\b(?:allowed|permitted|permissible|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|(?:can|could|may|should|must)\s+(?!you\b)\S+|what\s+should\s+i\s+do)\b/i,
     scriptPattern: /(?:يجوز|لا يجوز|واجب|مستحب|حرام|حلال|نجس|طاهر|حكم|کیا میں|جائز|ناجائز)/u,
@@ -342,10 +375,15 @@ function entityExpansion(query, normalized) {
 
 function requestedCollection(query, manifest) {
   const normalizedQuery = normalize(query);
+  const compact = (value) => normalize(value)
+    .replace(/shi\s*[ʿ'`’]?\s*a/gu, "shia")
+    .replace(/\b(?:al|as|ash|el)\b/gu, "")
+    .replace(/[^a-z0-9]/g, "");
+  const queryKey = compact(normalizedQuery);
   return (manifest?.strings?.collections || [])
-    .map((collection) => ({ collection, normalized: normalize(collection) }))
-    .filter(({ normalized }) => normalized && normalizedQuery.includes(normalized))
-    .sort((left, right) => right.normalized.length - left.normalized.length)[0]?.normalized || "";
+    .map((collection) => ({ collection, normalized: normalize(collection), key: compact(collection) }))
+    .filter(({ normalized, key }) => normalized && key && (queryKey.includes(key) || key.includes(queryKey)))
+    .sort((left, right) => right.key.length - left.key.length)[0]?.normalized || "";
 }
 
 function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries = []) {
@@ -353,6 +391,7 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueri
   const knownCorpusTerms = corpusTermCount(original, manifest);
   if (facet?.name === "time-definition") return true;
   if (glossaryQueries.length || facet?.name === "biographical-event") return false;
+  if (facet?.name === "virtues" || facet?.name === "importance") return false;
   if (facet?.name === "method") {
     // Short procedure requests stay on the retrieval fast path. If their
     // first hit is only an exception or a special case, the worker expands
@@ -507,6 +546,15 @@ export function buildReligiousSearchPlan(query, manifest) {
   const definitionEvidenceQuery = semanticHeadTerm && facet?.name === "definition"
     ? `${semanticHeadTerm} creature greater than angel accompanies protects knowledge`
     : "";
+  const subjectTerms = normalized.split(/\s+/)
+    .filter((token) => token.length >= 4
+      && !ENGLISH_STOP_WORDS.has(token)
+      && !GENERIC_QUERY_WORDS.has(token)
+      && !(facet?.terms || []).some((term) => normalize(term).split(/\s+/).includes(token)))
+    .slice(0, 4);
+  const importanceEvidenceQuery = facet?.name === "importance" && subjectTerms.length
+    ? `${subjectTerms.join(" ")} denial religion faith piety necessity`
+    : "";
   const expansionParts = [semanticGlossQuery || original, entity.text];
   const expandMethodContext = facet?.name === "method"
     && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
@@ -531,21 +579,24 @@ export function buildReligiousSearchPlan(query, manifest) {
       methodSubjectTerms,
       strictFacet: Boolean(facet?.strict),
       requiredTerms: facet?.strict ? facet.terms : [],
-      boostTerms: facet?.terms || [],
+      boostTerms: [...(facet?.terms || []), ...subjectTerms],
       entityTerms: entity.terms,
       requireEntityMatch: entity.detected,
       requiredTitlePhrase: facet?.name === "biographical-event" ? entity.text : "",
       minimumTitleEntityCoverage: 0.66,
-      requireFocusCoverage: !expandMethodContext,
+      // General questions should not be rejected merely because an English
+      // intent word (or a transliteration typo) has no exact indexed hash.
+      // Faceted searches retain their focused evidence gate.
+      requireFocusCoverage: Boolean(facet) && !expandMethodContext,
       requireFocusFacetProximity: (facet?.name === "method" && !expandMethodContext) || facet?.name === "time-definition",
       minimumTitleFocusFacetDensity: facet?.name === "method" || facet?.name === "time-definition" ? 0.14 : 0,
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
-      secondaryQueries: definitionEvidenceQuery ? [definitionEvidenceQuery] : [],
-      secondaryBoostTerms: definitionEvidenceQuery.split(/\s+/).filter(Boolean),
-      evidenceRoles: definitionEvidenceQuery ? ["definition-detail"] : [],
-      evidenceQuerySubjects: definitionEvidenceQuery ? [[semanticHeadTerm]] : [],
+      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery].filter(Boolean),
+      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
+      evidenceRoles: [definitionEvidenceQuery ? "definition-detail" : "", importanceEvidenceQuery ? "importance-context" : ""].filter(Boolean),
+      evidenceQuerySubjects: [definitionEvidenceQuery ? [semanticHeadTerm] : [], importanceEvidenceQuery ? subjectTerms : []].filter((group) => group.length),
       resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
@@ -567,7 +618,7 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: definitionEvidenceQuery
+      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery
         ? 6
         : (facet?.secondaryPromotionLimit || 4),
     },

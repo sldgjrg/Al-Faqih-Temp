@@ -1873,7 +1873,8 @@ export function rerankLoadedRecords({
     .filter((result) => (
       result._matchedSources > 0
       && result._collectionMatched
-      && (!plan.retrievalProfile?.requireFocusCoverage
+      && (plan.retrievalProfile?.disableFocus
+        || !plan.retrievalProfile?.requireFocusCoverage
         || result._focusCoverage >= Math.max(
           0.34,
           Math.min(1, Number(plan.retrievalProfile?.minimumFocusCoverage) || 0.6),
@@ -1888,7 +1889,7 @@ export function rerankLoadedRecords({
         )
       )
       && (result.familyScore < 0.42 || result._coverage >= 0.22 || result._titleCoverage >= 0.08 || result.familyScore >= 0.56)
-      && (result._focusMatched || result.familyScore >= 0.56)
+      && (plan.retrievalProfile?.disableFocus || result._focusMatched || result.familyScore >= 0.56)
       && (!plan.retrievalProfile?.requireEntityMatch
         || result._entityMatched
         || result.familyScore >= 0.56)
@@ -1957,13 +1958,13 @@ export function taqiyyahEvidence(text) {
   if (narratorCriticism) {
     return {
       level: "review",
-      note: "Narrator criticism appears in this text. That alone does not establish taqiyyah; contextual review is needed.",
+      note: "Narrator criticism appears in this text. That alone does not establish taqiyyah; contextual review may be needed.",
     };
   }
   if (contextual) {
     return {
       level: "context",
-      note: "The text contains a coercion, danger, secrecy, or contradiction cue. Scholarly contextual review is needed.",
+      note: "The text contains a coercion, danger, secrecy, or contradiction cue. Contextual review may be needed.",
     };
   }
   return null;

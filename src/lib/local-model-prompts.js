@@ -406,6 +406,31 @@ export function biographicalEvidenceSynthesis(results) {
   ].join("\n");
 }
 
+function topicEvidenceSynthesis(results, patterns, label) {
+  const available = Array.isArray(results) ? results : [];
+  const direct = strongestEvidence(available, patterns) || available[0];
+  if (!direct) return "";
+  const reportNumber = available.indexOf(direct) + 1;
+  const translation = publishedTranslation(direct.text, ["taqiy", "religion", "faith", "piety", "shia", "love", "clay", "virtue", "merit"]);
+  return [
+    "## Direct answer", "",
+    `The retrieved narrations address ${label}. Report ${reportNumber} is the clearest displayed evidence:`, "",
+    translation.split(/\n+/).map((line) => `> ${line}`).join("\n>"), "",
+    "## Evidence", "",
+    `Report ${reportNumber}, ${direct.collection}, “${direct.chapter || direct.title}.” The remaining displayed reports are additional narrations or parallel evidence on the same subject.`, "",
+    "## Limits of the evidence", "",
+    "This reproduces the retrieved narrations and does not add a chain grade or an independent legal ruling.",
+  ].join("\n");
+}
+
+export function virtueEvidenceSynthesis(results) {
+  return topicEvidenceSynthesis(results, [/\b(?:shia|shiite|love|virtue|merit|praise|clay)\b/i], "the virtues and qualities requested");
+}
+
+export function importanceEvidenceSynthesis(results) {
+  return topicEvidenceSynthesis(results, [/\b(?:taqiy|religion|faith|piety|important|necessity|denial)\b/i], "the requested importance or religious significance");
+}
+
 function resultSource(result, index) {
   return [
     `REPORT ${index + 1}`,

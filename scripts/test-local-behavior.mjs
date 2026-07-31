@@ -9,10 +9,12 @@ import { cleanCorpusDisplay, cleanCorpusMarkdown } from "../src/lib/corpus-displ
 import {
   biographicalEvidenceSynthesis,
   definitionEvidenceSynthesis,
+  importanceEvidenceSynthesis,
   methodEvidenceSynthesis,
   parseQueryAnalysisJson,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
+  virtueEvidenceSynthesis,
 } from "../src/lib/local-model-prompts.js";
 import { resolveQueryTokens } from "../public/hadith-retrieval-core.mjs";
 import { validateGeneratedReply } from "../public/local-output-guard.mjs";
@@ -178,6 +180,26 @@ assert.ok(
   taqlid.results.some((result) => /taqlid|following the opinions/i.test(`${result.title} ${result.chapter}`)),
   "taqlid must return a report that directly names the subject",
 );
+
+const taqiyyahImportance = await routedSearch("how important is taqiyyah");
+assert.equal(taqiyyahImportance.route.retrievalProfile.facet, "importance");
+assert.equal(taqiyyahImportance.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  taqiyyahImportance.results.some((result) => result.link.includes("/26/1/3/1"))
+    && taqiyyahImportance.results.some((result) => result.link.includes("/2/1/97/")),
+  "taqiyyah importance must include the Sifat al-Shia denial report and Al-Kafi taqiyyah reports",
+);
+assert.match(importanceEvidenceSynthesis(taqiyyahImportance.results), /retrieved narrations|religious significance/i);
+
+const shiaVirtues = await routedSearch("give me hadith in priase of the shia");
+assert.equal(shiaVirtues.route.retrievalProfile.facet, "virtues");
+assert.equal(shiaVirtues.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  shiaVirtues.results.some((result) => result.link.includes("/25/1/"))
+    && shiaVirtues.results.some((result) => result.link.includes("/26/1/")),
+  "Shia praise must search both dedicated Fada'il and Sifat collections",
+);
+assert.match(virtueEvidenceSynthesis(shiaVirtues.results), /virtues|qualities/i);
 
 const fastRuhRoute = resolveLocalConversation(
   "what is ruh ul qudus",
