@@ -300,6 +300,100 @@ let databasePromise;
 let initializationPromise;
 let ready = false;
 const loadedShards = new Map();
+let chapterDocuments;
+
+function parseCorpusChapter(link = "") {
+  const match = String(link).match(/\/hadith\/(\d+)\/(\d+)\/(\d+)\/(\d+)/);
+  if (!match) return null;
+  return {
+    volumeKey: `${match[1]}/${match[2]}`,
+    chapter: Number(match[3]),
+  };
+}
+
+function buildChapterDocuments() {
+  const byVolume = new Map();
+  for (let id = 0; id < manifest.metadata.length; id += 1) {
+    const location = parseCorpusChapter(manifest.metadata[id]?.[7]);
+    if (!location) continue;
+    const chapters = byVolume.get(location.volumeKey) || new Map();
+    const documents = chapters.get(location.chapter) || [];
+    documents.push(id);
+    chapters.set(location.chapter, documents);
+    byVolume.set(location.volumeKey, chapters);
+  }
+  return byVolume;
+}
+
+function methodActionScore(result = {}) {
+  const text = `${result.title || ""} ${result.chapter || ""} ${result.text || ""}`;
+  return (text.match(/\b(?:demonstrat|description|procedure|first|then|wash(?:ed|ing)?|wipe(?:d|s)?|slaughter(?:ed|ing)?|shav(?:e|ed|ing)|name(?:d|ing)?)\b/gi) || []).length;
+}
+
+function hasDirectMethodInstruction(results = []) {
+  return results.slice(0, 1).some((result) => methodActionScore(result) > 0);
+}
+
+function foldTransliteration(value = "") {
+  return normalizeText(value)
+    .replace(/ee/g, "i")
+    .replace(/([aeiou])\1+/g, "$1")
+    .replace(/ou/g, "u")
+    .replace(/(?:dh|th|zh|kh|gh)/g, (pair) => pair[0])
+    .replace(/q/g, "k")
+    .replace(/h$/g, "");
+}
+
+function transliterationSkeleton(value = "") {
+  return foldTransliteration(value).replace(/[aeiou]+/g, "");
+}
+
+function hasMethodSubject(result, terms = []) {
+  if (!terms.length) return true;
+  const text = `${result?.title || ""} ${result?.chapter || ""} ${result?.text || ""}`;
+  const tokens = normalizeText(text).split(/\s+/).filter((token) => token.length >= 4);
+  return terms.some((term) => {
+    const normalized = normalizeText(term);
+    const folded = foldTransliteration(normalized);
+    const skeleton = transliterationSkeleton(normalized);
+    return tokens.some((token) => token.includes(normalized)
+      || (folded.length >= 4 && foldTransliteration(token) === folded)
+      || (skeleton.length >= 3 && transliterationSkeleton(token) === skeleton));
+  });
+}
+
+function neighbouringMethodCandidates(seedResults, candidates) {
+  if (!chapterDocuments || !seedResults.length) return [];
+  const existing = new Set(candidates.map((candidate) => candidate.id));
+  const topScore = candidates[0]?.candidateScore || 1;
+  const related = [];
+  for (const seed of seedResults.slice(0, 2)) {
+    const location = parseCorpusChapter(seed.link);
+    const chapters = location && chapterDocuments.get(location.volumeKey);
+    if (!chapters) continue;
+    for (const offset of [-1, 1, -2, 2, -3, 3, -4, 4]) {
+      for (const id of chapters.get(location.chapter + offset) || []) {
+        if (existing.has(id)) continue;
+        existing.add(id);
+        related.push({
+          id,
+          passageId: -1,
+          passageScore: 0,
+          supportingPassageScore: 0,
+          phraseMatches: 0,
+          crossLanguageMatches: 0,
+          candidateScore: topScore * (1.12 - Math.abs(offset) * 0.08),
+          relationScore: 0.72 - Math.abs(offset) * 0.05,
+          relationTo: seed.id,
+          familyRoot: seed.id,
+          familyDepth: 1,
+          familyScore: 0.72 - Math.abs(offset) * 0.05,
+        });
+      }
+    }
+  }
+  return related.slice(0, 48);
+}
 
 function openDatabase() {
   if (databasePromise) return databasePromise;
@@ -438,6 +532,7 @@ async function initialize() {
   initializationPromise = (async () => {
     self.postMessage({ type: "status", message: "Loading corpus catalog" });
     manifest = await loadManifest();
+    chapterDocuments = buildChapterDocuments();
     const prefix = manifest.version;
     self.postMessage({ type: "status", message: "Loading passage retrieval index" });
     const [hashBuffer, weightBuffer, documentBuffer, lengthBuffer] = await Promise.all([
@@ -582,9 +677,13 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     requestId,
     message: "Following corpus links to parallel reports",
   });
+  const methodNeighbours = retrievalProfile?.facet === "method"
+    && retrievalProfile?.expandMethodContext
+    ? neighbouringMethodCandidates(seedResults, candidates)
+    : [];
   const expandedCandidates = expandRelatedCandidates({
     manifest,
-    candidates,
+    candidates: [...candidates, ...methodNeighbours],
     seedResults,
     filters: parsed.filters,
     limit: Math.max(240, Math.min(640, Number(retrievalProfile?.expandedLimit) || 420)),
@@ -600,6 +699,41 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     records,
     resultLimit: Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
   }).map((result) => ({ ...result, evidenceRole: "direct" }));
+  if (retrievalProfile?.expandMethodContext) {
+    const procedureCandidates = expandedCandidates
+      .filter((candidate) => hasMethodSubject({ text: records.get(candidate.id) || "" }, retrievalProfile?.methodSubjectTerms)
+        && methodActionScore({ text: records.get(candidate.id) || "" }) > 0)
+      .sort((left, right) => (
+        methodActionScore({ text: records.get(right.id) || "" }) - methodActionScore({ text: records.get(left.id) || "" })
+        || right.candidateScore - left.candidateScore
+      ))
+      .slice(0, 48);
+    const contextualProcedureResults = procedureCandidates
+      .slice(0, 12)
+      .flatMap((candidate) => rerankLoadedRecords({
+        manifest,
+        plan,
+        candidates: [candidate],
+        records,
+        resultLimit: 1,
+      }))
+      .filter((result) => hasDirectMethodInstruction([result])
+        && hasMethodSubject(result, retrievalProfile?.methodSubjectTerms))
+      .sort((left, right) => methodActionScore(right) - methodActionScore(left) || right.score - left.score)
+      .map((result) => ({ ...result, evidenceRole: "procedure-context" }));
+    if (contextualProcedureResults.length) {
+      const seenContext = new Set();
+      results = [
+        ...contextualProcedureResults,
+        ...results.filter((result) => hasMethodSubject(result, retrievalProfile?.methodSubjectTerms)),
+      ].filter((result) => {
+        const key = result.link || result.id;
+        if (seenContext.has(key)) return false;
+        seenContext.add(key);
+        return true;
+      }).slice(0, Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)));
+    }
+  }
   const secondaryQueries = [
     ...(Array.isArray(retrievalProfile?.secondaryQueries) ? retrievalProfile.secondaryQueries : []),
     ...(retrievalProfile?.secondaryQuery ? [retrievalProfile.secondaryQuery] : []),
@@ -610,17 +744,21 @@ async function search({ requestId, query, filters, retrievalProfile }) {
       const secondaryQuery = secondaryQueries[queryIndex];
       const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
       const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
+      const isTimingEvidence = retrievalProfile?.facet === "time-definition";
       const secondaryProfile = {
         ...retrievalProfile,
         secondaryQuery: "",
         secondaryQueries: [],
         // Score each evidence role by its own vocabulary and require its
         // subject anchor so broad relation words cannot promote an unrelated
-        boostTerms: secondaryQuery.split(/\s+/).filter(Boolean),
-        requireSubjectMatch: true,
-        subjectTermGroups: requiredSubjects.length ? requiredSubjects : [secondaryQuery],
+        boostTerms: isTimingEvidence ? [] : secondaryQuery.split(/\s+/).filter(Boolean),
+        // Timing reports often state the observable sign without repeating
+        // the prayer's English name (for example, a white horizontal dawn
+        // description). The timing query itself remains the focus gate.
+        requireSubjectMatch: isTimingEvidence ? false : true,
+        subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
         minimumSubjectCoverage: 0.5,
-        requireFocusCoverage: true,
+        requireFocusCoverage: isTimingEvidence ? false : true,
         minimumFocusCoverage: 0.34,
         disableFocus: false,
         requireFocusFacetProximity: false,

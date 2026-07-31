@@ -87,12 +87,41 @@ assert.deepEqual(
 const aqiqah = await routedSearch("find ahadith on aqeeqah");
 assert.ok(hasLink(aqiqah.results, "/6/1/16/") || hasLink(aqiqah.results, "/6/1/17/"));
 
+for (const query of [
+  "how do I do aqeeqah",
+  "how aqeeqa done",
+  "aqiqa procedure",
+  "how perform aqiqah",
+  "aqikah how do",
+]) {
+  const route = resolveLocalConversation(query, { messages: [] }, {}, manifest);
+  assert.equal(route.intent, "religious-search", `${query} must not fall through to casual chat`);
+  assert.equal(route.retrievalProfile.facet, "method", `${query} must preserve the requested method relation`);
+  assert.equal(route.retrievalProfile.needsQueryAnalysis, false, `${query} must stay on the fast retrieval path`);
+  assert.equal(route.retrievalProfile.expandMethodContext, true, `${query} must expand to action-bearing corpus context`);
+}
+
 const wudu = await routedSearch("how to do wudhu");
 assert.ok(wudu.results.length > 0);
 assert.ok(
   wudu.results.length === 2
     && wudu.results.every((result) => /description of wudu/i.test(`${result.title} ${result.chapter}`)),
   "a misspelled how-to question must rank direct descriptions of wudu first",
+);
+
+const aqeeqahProcedure = await routedSearch("procedure for aqeeqah");
+assert.equal(aqeeqahProcedure.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  aqeeqahProcedure.results[0]?.link.includes("/6/1/17/")
+    && /seventh day|slaughter|shave|name/i.test(aqeeqahProcedure.results[0]?.text || ""),
+  "a short aqeeqah procedure search must stay fast and lead with an actual procedure, not only the inability exception",
+);
+
+const naturalAqeeqahProcedure = await routedSearch("how do I do aqeeqah");
+assert.ok(
+  naturalAqeeqahProcedure.results[0]?.link.includes("/6/1/17/")
+    && /seventh day|slaughter|shave|name/i.test(naturalAqeeqahProcedure.results[0]?.text || ""),
+  "a natural how-to phrasing must lead with the action-bearing aqeeqah procedure",
 );
 
 const fajr = await analyzedSearch("what time should I pray fajr", {
@@ -102,7 +131,7 @@ const fajr = await analyzedSearch("what time should I pray fajr", {
   answerCriteria: ["observable beginning of prayer time", "white light across the horizon", "ending at sunrise"],
   evidenceQueries: [
     { role: "direct", query: "time of morning Salah dawn appears until rays of sun", requiredSubjects: ["morning Salah time"] },
-    { role: "observable-sign", query: "two dawns white thread true dawn eastern whiteness horizon", requiredSubjects: ["true dawn"] },
+    { role: "observable-sign", query: "true dawn white line horizontal like fine linen horizon rays sunrise", requiredSubjects: ["true dawn"] },
   ],
   relation: "time-definition",
   confidence: 0.95,
@@ -115,6 +144,10 @@ assert.ok(
 assert.ok(
   fajr.results.slice(0, 4).some((result) => /white|dawn|horizon|rays of sun/i.test(result.text)),
   "Fajr evidence must contain the observable dawn boundary rather than generic prayer advice",
+);
+assert.ok(
+  fajr.results.some((result) => result.link.includes("/3/4/7/3")),
+  "Fajr evidence must include the horizontal true-dawn report",
 );
 const fajrSynthesis = timeDefinitionEvidenceSynthesis(fajr.results);
 assert.match(fajrSynthesis, /published translation/i);

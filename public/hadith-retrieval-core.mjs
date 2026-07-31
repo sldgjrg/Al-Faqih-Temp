@@ -858,7 +858,8 @@ function fuzzyCorpusToken(token, manifest) {
     .replace(/([aeiou])\1+/g, "$1")
     .replace(/ou/g, "u")
     .replace(/(?:dh|th|zh|kh|gh)/g, (pair) => pair[0])
-    .replace(/q/g, "k");
+    .replace(/q/g, "k")
+    .replace(/h$/g, "");
   const maximumDistance = token.length >= 6 ? 2 : 1;
   const foldedToken = foldTransliteration(token);
   let best = "";

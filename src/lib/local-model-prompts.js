@@ -280,11 +280,21 @@ export function methodEvidenceSynthesis(results) {
 
 export function timeDefinitionEvidenceSynthesis(results) {
   const available = Array.isArray(results) ? results : [];
-  const direct = available.find((result) => (
-    /\b(?:time|begin|start|end|until|before|after|appear|horizon|light|darkness|dawn|sunrise|sunset)\b/i.test(
-      `${result?.title || ""} ${result?.chapter || ""} ${result?.text || ""}`,
-    )
-  )) || available[0];
+  const direct = [...available]
+    .map((result, index) => {
+      const text = `${result?.title || ""} ${result?.chapter || ""} ${result?.text || ""}`;
+      const boundaryScore = [
+        /\btrue\s+dawn\b/i,
+        /\bwhite\s+(?:line|light|thread)\b/i,
+        /\bhorizon|horizontal(?:ly)?\b/i,
+        /\b(?:rays?\s+of\s+sun|sunrise|sunset)\b/i,
+        /\b(?:dawn|fajr|morning)\s+(?:begins?|is|appears?|time)\b/i,
+        /\buntil\s+(?:the\s+)?(?:sun|sunrise|rays?)\b/i,
+      ].reduce((score, pattern) => score + (pattern.test(text) ? 1 : 0), 0);
+      const genericTimeScore = /\b(?:time|begin|start|end|until|before|after|appear|light|darkness)\b/i.test(text) ? 1 : 0;
+      return { result, index, score: boundaryScore * 4 + genericTimeScore };
+    })
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0]?.result || available[0];
   if (!direct) return "";
   const reportNumber = available.indexOf(direct) + 1;
   const translation = publishedTranslation(direct.text, [

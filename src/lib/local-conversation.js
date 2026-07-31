@@ -5,6 +5,12 @@ const ENGLISH_STOP_WORDS = new Set(
   "a about an and are as at be can could did do does for from had has have how i if in into is it me my of on or please tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
 );
 
+const GENERIC_QUERY_WORDS = new Set(
+  "answer describe explanation find give help information instructions look lookup manner method perform procedure provide search show steps tell".split(" "),
+);
+
+const CORPUS_VOCABULARY_CACHE = new WeakMap();
+
 const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
@@ -124,12 +130,12 @@ const RETRIEVAL_FACETS = [
   },
   {
     name: "method",
-    pattern: /\b(?:how\s+(?:to|do|does|should|can|could|did|would)|how\s+(?:is|are)\b.{0,60}\b(?:done|performed|recited|made)|(?:teach|show)\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
+    pattern: /\b(?:how\s+(?:to|do|does|should|can|could|did|would)|how\b.{0,60}\b(?:done|performed|recited|made)|(?:teach|show)\s+me|method|procedure|steps?|perform|recite|posture|position|demonstrat(?:e|ed|ion))\b/i,
     scriptPattern: /(?:كيف|علمني|طريقة|خطوات|كيفية|أؤدي|اصلي|أصلي|کیسے|طریقہ|سکھائیں)/u,
     strict: false,
     terms: [
       "description", "describe", "demonstrate", "method", "procedure", "steps", "manner",
-      "perform", "first", "then", "wash", "wipe", "recite", "bow", "prostrate",
+      "perform", "performed", "done", "made", "first", "then", "wash", "wipe", "recite", "bow", "prostrate",
       "stand", "sit", "slaughter", "shave",
     ],
     resultLimit: 2,
@@ -228,7 +234,10 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest) {
   const knownCorpusTerms = corpusTermCount(original, manifest);
   if (facet?.name === "time-definition") return true;
   if (facet?.name === "method") {
-    return wordCount > 6;
+    // Short procedure requests stay on the retrieval fast path. If their
+    // first hit is only an exception or a special case, the worker expands
+    // the neighbouring corpus chapters before asking the model to help.
+    return wordCount > 8 && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
   }
   if (facet?.name === "legal-practical") {
     return knownCorpusTerms < 2
@@ -240,6 +249,79 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest) {
   // short, unfamiliar general corpus questions through the semantic planner
   // instead of treating an empty exact-match search as authoritative.
   return knownCorpusTerms < 2 && wordCount >= 2;
+}
+
+function editDistanceAtMostOne(left, right) {
+  if (left === right) return true;
+  if (Math.abs(left.length - right.length) > 1) return false;
+  let differences = 0;
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex] === right[rightIndex]) {
+      leftIndex += 1;
+      rightIndex += 1;
+      continue;
+    }
+    differences += 1;
+    if (differences > 1) return false;
+    if (left.length > right.length) leftIndex += 1;
+    else if (right.length > left.length) rightIndex += 1;
+    else {
+      leftIndex += 1;
+      rightIndex += 1;
+    }
+  }
+  return differences + (left.length - leftIndex) + (right.length - rightIndex) <= 1;
+}
+
+function foldTransliteration(value) {
+  return String(value || "")
+    .replace(/ee/g, "i")
+    .replace(/([aeiou])\1+/g, "$1")
+    .replace(/ou/g, "u")
+    .replace(/(?:dh|th|zh|kh|gh)/g, (pair) => pair[0])
+    .replace(/q/g, "k")
+    .replace(/h$/g, "");
+}
+
+function corpusVocabulary(manifest) {
+  if (!manifest || typeof manifest !== "object") {
+    return { exact: new Set(), folded: new Set() };
+  }
+  const cached = CORPUS_VOCABULARY_CACHE.get(manifest);
+  if (cached) return cached;
+  const exact = new Set();
+  const folded = new Set();
+  for (const entry of manifest.lexicon || []) {
+    const term = String(entry?.[0] || "");
+    if (!/^[a-z][a-z0-9]{2,}$/u.test(term)) continue;
+    exact.add(term);
+    const normalizedTerm = foldTransliteration(term);
+    if (normalizedTerm.length >= 3) folded.add(normalizedTerm);
+  }
+  const vocabulary = { exact, folded };
+  CORPUS_VOCABULARY_CACHE.set(manifest, vocabulary);
+  return vocabulary;
+}
+
+function hasFrequentCorpusAnchor(query, manifest, intentTerms = []) {
+  const intentVocabulary = new Set(
+    intentTerms
+      .flatMap((term) => normalize(term).split(/\s+/))
+      .filter(Boolean),
+  );
+  const frequent = (manifest?.lexicon || [])
+    .filter((entry) => Number(entry?.[1]) >= 100)
+    .map((entry) => String(entry?.[0] || ""))
+    .filter((term) => term.length >= 4);
+  if (!frequent.length) return false;
+  return normalize(query)
+    .split(/\s+/)
+    .filter((token) => token.length >= 4
+      && !ENGLISH_STOP_WORDS.has(token)
+      && !intentVocabulary.has(token))
+    .some((token) => frequent.some((term) => editDistanceAtMostOne(token, term)));
 }
 
 export function buildReligiousSearchPlan(query, manifest) {
@@ -260,6 +342,16 @@ export function buildReligiousSearchPlan(query, manifest) {
   const entity = entityExpansion(original, normalized);
   const requiredCollection = requestedCollection(original, manifest);
   const expansionParts = [original, entity.text];
+  const expandMethodContext = facet?.name === "method"
+    && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
+  const methodIntentTerms = new Set((facet?.terms || [])
+    .flatMap((term) => normalize(term).split(/\s+/))
+    .filter(Boolean));
+  const methodSubjectTerms = facet?.name === "method"
+    ? normalized.split(/\s+/).filter((term) => term.length >= 4
+      && !ENGLISH_STOP_WORDS.has(term)
+      && !methodIntentTerms.has(term))
+    : [];
 
   return {
     searchQuery: expansionParts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim(),
@@ -268,20 +360,22 @@ export function buildReligiousSearchPlan(query, manifest) {
       version: 3,
       facet: facet?.name || "general",
       needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest),
+      expandMethodContext,
+      methodSubjectTerms,
       strictFacet: Boolean(facet?.strict),
       requiredTerms: facet?.strict ? facet.terms : [],
       boostTerms: facet?.terms || [],
       entityTerms: entity.terms,
       requireEntityMatch: entity.detected,
-      requireFocusCoverage: true,
-      requireFocusFacetProximity: facet?.name === "method" || facet?.name === "time-definition",
+      requireFocusCoverage: !expandMethodContext,
+      requireFocusFacetProximity: (facet?.name === "method" && !expandMethodContext) || facet?.name === "time-definition",
       minimumTitleFocusFacetDensity: facet?.name === "method" || facet?.name === "time-definition" ? 0.14 : 0,
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
       secondaryQueries: [],
       secondaryBoostTerms: [],
-      resultLimit: Math.min(10, facet?.resultLimit || 10),
+      resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
       candidateLimit: 360,
@@ -291,13 +385,13 @@ export function buildReligiousSearchPlan(query, manifest) {
       familyPropagationThreshold: 0.48,
       maxFamilyMembers: facet?.maxFamilyMembers || 5,
       familyMinRelation: facet?.familyMinRelation || 0.5,
-      minUniqueResults: facet?.minUniqueResults || (facet?.name === "method" ? 2 : 3),
-      maxUniqueResults: facet?.maxUniqueResults || 7,
+      minUniqueResults: expandMethodContext ? 2 : (facet?.minUniqueResults || (facet?.name === "method" ? 2 : 3)),
+      maxUniqueResults: expandMethodContext ? 4 : (facet?.maxUniqueResults || 7),
       parallelReserve: facet?.parallelReserve ?? (facet?.name === "method" ? 4 : 3),
       uniqueFloorRatio: facet?.uniqueFloorRatio || (facet?.strict ? 0.34 : 0.38),
       clusterOverlapThreshold: facet?.clusterOverlapThreshold || 0.72,
       maxDirectResults: facet?.maxDirectResults || 5,
-      maxPerChapter: facet?.maxPerChapter || 3,
+      maxPerChapter: expandMethodContext ? 4 : (facet?.maxPerChapter || 3),
       disableFocus: Boolean(facet?.disableFocus),
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
@@ -330,12 +424,22 @@ export function applyQueryAnalysisToSearchPlan(searchQuery, retrievalProfile = {
     analysis.retrievalQuery,
     ...answerCriteria,
   ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const analyzedTiming = analysis.relation === "time-definition" || retrievalProfile.facet === "time-definition";
   const secondaryQueries = [
     ...evidenceQueries,
     ...(Array.isArray(retrievalProfile.secondaryQueries) ? retrievalProfile.secondaryQueries : []),
   ].filter((entry, index, all) => entry && all.indexOf(entry) === index).slice(0, 4);
+  const timingText = `${searchQuery} ${analysis.retrievalQuery} ${(analysis.exactSubjects || []).join(" ")}`;
+  const dawnBoundaryQuery = /\b(?:fajr|fajer|subh|morning|dawn|sunrise)\b/i.test(timingText)
+    ? "true dawn white line horizontal qabati"
+    : "";
+  if (analyzedTiming && dawnBoundaryQuery && !secondaryQueries.some((entry) => /\bqabati\b/i.test(entry))) {
+    secondaryQueries.splice(Math.min(1, secondaryQueries.length), 0, dawnBoundaryQuery);
+    secondaryQueries.splice(4);
+  }
   const requireSubjectMatch = subjectTermGroups?.length > 0
     && analysis.confidence >= 0.55;
+  const analyzedMethod = analysis.relation === "method" || retrievalProfile.facet === "method";
   return {
     searchQuery: expandedQuery,
     retrievalProfile: {
@@ -361,20 +465,37 @@ export function applyQueryAnalysisToSearchPlan(searchQuery, retrievalProfile = {
       secondaryQuery: secondaryQueries[0] || "",
       secondaryQueries,
       secondaryBoostTerms: secondaryQueries.flatMap((entry) => entry.split(/\s+/).filter(Boolean)),
-      secondaryPromotionLimit: Math.max(3, Math.min(4, secondaryQueries.length || 3)),
+      secondaryPromotionLimit: analyzedTiming
+        ? Math.max(6, Math.min(8, secondaryQueries.length ? 8 : 6))
+        : Math.max(3, Math.min(4, secondaryQueries.length || 3)),
+      // A decomposed procedure can span several chapters. Keep the compact
+      // two-result fast path for ordinary method searches, but allow an
+      // analyzed method to return each distinct procedural report family.
+      resultLimit: analyzedMethod
+        ? Math.max(6, Number(retrievalProfile.resultLimit) || 0)
+        : analyzedTiming
+          ? Math.max(8, Number(retrievalProfile.resultLimit) || 0)
+          : retrievalProfile.resultLimit,
+      maxUniqueResults: analyzedMethod ? Math.max(4, Number(retrievalProfile.maxUniqueResults) || 0) : retrievalProfile.maxUniqueResults,
+      minUniqueResults: analyzedMethod ? Math.max(2, Number(retrievalProfile.minUniqueResults) || 0) : retrievalProfile.minUniqueResults,
+      maxPerChapter: analyzedMethod ? Math.max(4, Number(retrievalProfile.maxPerChapter) || 0) : retrievalProfile.maxPerChapter,
     },
   };
 }
 
 function corpusTermCount(query, manifest) {
-  const lexicon = new Set((manifest?.lexicon || []).map((entry) => entry[0]));
-  if (!lexicon.size) return 0;
+  const vocabulary = corpusVocabulary(manifest);
+  if (!vocabulary.exact.size) return 0;
   return normalize(query)
     .split(/\s+/)
     .filter((token, index, all) => token.length > 2
       && !ENGLISH_STOP_WORDS.has(token)
+      && !GENERIC_QUERY_WORDS.has(token)
       && all.indexOf(token) === index
-      && lexicon.has(token))
+      && (
+        vocabulary.exact.has(token)
+        || vocabulary.folded.has(foldTransliteration(token))
+      ))
     .length;
 }
 

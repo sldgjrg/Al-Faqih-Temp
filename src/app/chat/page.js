@@ -850,7 +850,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=25", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=27", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -892,7 +892,7 @@ export default function LocalHadithChat() {
             : conversation));
         requestLocalGeneration(
           queryAnalysisMessages(pending.synthesisQuery || pending.query),
-          { mode: "query-analysis", maxNewTokens: 260, temperature: 0 },
+          { mode: "query-analysis", maxNewTokens: 220, temperature: 0 },
         )
           .then((generation) => {
             const analysis = parseQueryAnalysisJson(generation.text);
@@ -1349,7 +1349,7 @@ export default function LocalHadithChat() {
     try {
       const generation = await requestLocalGeneration(
         queryAnalysisMessages(localResponse.synthesisQuery || query),
-        { mode: "query-analysis", maxNewTokens: 260, temperature: 0 },
+        { mode: "query-analysis", maxNewTokens: 220, temperature: 0 },
       );
       const analysis = parseQueryAnalysisJson(generation.text);
       if (!analysis) throw new Error("The local query analysis was not valid JSON.");
