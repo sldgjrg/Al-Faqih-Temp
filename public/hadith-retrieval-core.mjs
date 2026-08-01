@@ -634,7 +634,7 @@ export const BODY_SLOTS = 64;
 export const PHRASE_SLOTS = PASSAGE_SLOTS - BODY_SLOTS;
 
 const LATIN_STOP_WORDS = new Set(
-  "a al an and are as at be been but by can did do does for from had has have he her him his i if in into is it its like may me my of on or our said she so than that the their them then there these they this to us was we were what when where which who will with would you your ibn abu bin b narrated following link http https thaqalayn net hadith volume".split(" "),
+  "a al an and are as at be been but by can concerning did do does for from had has have he her him his i if in into is it its like may me my of on or our regarding related reported said she so than that the their them then there these they this to us was we were what when where which who will with would you your ibn abu bin b narrated following link http https thaqalayn net hadith volume".split(" "),
 );
 
 const ARABIC_STOP_WORDS = new Set(
@@ -1564,7 +1564,12 @@ function buildNarrationClusters(results, profile = {}) {
 
   return [...grouped.values()]
     .map((members) => {
-      members.sort((left, right) => right.rawScore - left.rawScore);
+      members.sort((left, right) => (
+        profile.facet === "reported-evidence"
+          ? (right._reportedScenePriority || 0) - (left._reportedScenePriority || 0)
+            || right.rawScore - left.rawScore
+          : right.rawScore - left.rawScore
+      ));
       const anchor = members[0];
       return {
         anchor,
@@ -1729,15 +1734,49 @@ export function rerankLoadedRecords({
       const focusCoverage = plan.focusDemandCount
         ? focusMatches / plan.focusDemandCount
         : 1;
-      const subjectMatched = !plan.subjectSourceGroups.length
-        || plan.subjectSourceGroups.some((group) => {
-          const matches = [...group.hashes].filter((sourceHash) => matchedSourceSet.has(sourceHash)).length;
-          const requiredCoverage = Math.max(
-            0.34,
-            Math.min(1, Number(plan.retrievalProfile?.minimumSubjectCoverage) || 0.66),
-          );
-          return matches >= Math.max(1, Math.ceil(group.demandCount * requiredCoverage));
-        });
+      // Subject gates answer “does this report contain the requested
+      // concepts?”, so evaluate them over the complete record. Restricting
+      // this to one 64-token scoring window discarded long, directly relevant
+      // narrations when the action and its object appeared in different
+      // portions or languages of the same report.
+      const minimumSubjectCoverage = Math.max(
+        0.34,
+        Math.min(1, Number(plan.retrievalProfile?.minimumSubjectCoverage) || 0.66),
+      );
+      const measureSubjectCoverage = (sourceSet) => {
+        let maximumCoverage = 0;
+        let matched = !plan.subjectSourceGroups.length;
+        for (const group of plan.subjectSourceGroups) {
+          const matches = [...group.hashes].filter((sourceHash) => sourceSet.has(sourceHash)).length;
+          const coverage = matches / Math.max(1, group.demandCount);
+          maximumCoverage = Math.max(maximumCoverage, coverage);
+          if (matches >= Math.max(1, Math.ceil(group.demandCount * minimumSubjectCoverage))) matched = true;
+        }
+        return { matched, coverage: maximumCoverage };
+      };
+      let subjectEvidence = measureSubjectCoverage(matchedSourceSet);
+      // Scene-oriented reports are often long, with the requested action and
+      // object in different passages. Only expand to the full record when the
+      // cheap evidence-window check fails, keeping ordinary searches fast.
+      if (
+        !subjectEvidence.matched
+        && plan.retrievalProfile?.facet === "reported-evidence"
+        && plan.retrievalProfile?.allowFullRecordSubjectMatch !== false
+        && plan.subjectSourceGroups.length
+      ) {
+        const fullRecordSourceSet = new Set(matchedSourceSet);
+        for (const token of textTokens) {
+          const featureHash = hashFeature(unigramFeature(token));
+          const literalSource = featureHash.toString(36);
+          if (plan.sourceWeights.has(literalSource)) fullRecordSourceSet.add(literalSource);
+          for (const sourceHash of plan.crossLanguageSources.get(featureHash)?.keys() || []) {
+            fullRecordSourceSet.add(sourceHash);
+          }
+        }
+        subjectEvidence = measureSubjectCoverage(fullRecordSourceSet);
+      }
+      const subjectMatched = subjectEvidence.matched;
+      const subjectCoverage = subjectEvidence.coverage;
       const facetMatches = [...plan.boostFacetSourceHashes].filter((sourceHash) => matchedSourceSet.has(sourceHash));
       const requiredFacetMatches = [...plan.requiredFacetSourceHashes]
         .filter((sourceHash) => matchedSourceSet.has(sourceHash));
@@ -1813,12 +1852,47 @@ export function rerankLoadedRecords({
       const focusFacetTitleBoost = titleFocusFacet
         ? 0.18 + Math.min(0.18, titleEvidence.density * 0.18)
         : 0;
-      const rawScore = directScore + relationBoost + focusBoost + facetBoost + focusFacetTitleBoost;
+      // For requests asking what has been narrated about an act, prefer a
+      // report that actually preserves the scene: request/instruction,
+      // response, continuation, and outcome. This is relation-level scoring;
+      // it does not depend on any religious topic or narration ID.
+      const normalizedScene = plan.retrievalProfile?.facet === "reported-evidence"
+        ? normalizeText(`${title} ${chapter} ${text}`)
+        : "";
+      const explicitContinuation = normalizedScene
+        ? /\b(?:asked|instructed|ordered|said|told)\b.{0,90}\b(?:again|continue|continued|more|same way)\b/.test(normalizedScene)
+        : false;
+      const reportedScenePriority = normalizedScene
+        ? (explicitContinuation ? 4 : 0)
+          + (/\b(?:asked|instructed|ordered|said to|told)\b/.test(normalizedScene) ? 1 : 0)
+          + (/\b(?:so i|so he|so she|then i|then he|then she|after i|after he|after she)\b/.test(normalizedScene) ? 1 : 0)
+          + (/\b(?:answered|cried|did so|performed|replied|rewarded|wept)\b/.test(normalizedScene) ? 1 : 0)
+        : 0;
+      const reportedSceneBoost = normalizedScene
+        ? Math.min(0.34,
+            (/\b(?:asked|instructed|ordered|said to|told)\b/.test(normalizedScene) ? 0.08 : 0)
+            + (/\b(?:so i|so he|so she|then i|then he|then she|after i|after he|after she)\b/.test(normalizedScene) ? 0.07 : 0)
+            + (/\b(?:answered|cried|did so|performed|replied|rewarded|wept)\b/.test(normalizedScene) ? 0.07 : 0)
+            + (explicitContinuation ? 0.2 : 0))
+        : 0;
+      // A literal report can anchor a parallel translation that uses a
+      // different English noun. Strong family evidence plus the requested
+      // action and a complete answer scene is safer than a static synonym
+      // list, and generalizes across subjects and translations.
+      const reportedFamilySubject = plan.retrievalProfile?.facet === "reported-evidence"
+        && !subjectMatched
+        && subjectCoverage >= 0.5
+        && familyScore >= 0.45
+        && reportedScenePriority >= 3;
+      const reportedFamilySubjectBoost = reportedFamilySubject ? 0.16 : 0;
+      const rawScore = directScore + relationBoost + focusBoost + facetBoost + focusFacetTitleBoost
+        + reportedSceneBoost + reportedFamilySubjectBoost;
       const strategies = [];
       if (evidence.matchedLiteral) strategies.push("literal");
       if (evidence.phraseEvidence > 0.05) strategies.push("phrase");
       if (evidence.crossLanguage) strategies.push("cross-language");
       if (titleEvidence.coverage > 0.1) strategies.push("heading");
+      if (reportedSceneBoost >= 0.14) strategies.push("answer-scene");
       if (relationScore >= 0.22) strategies.push("parallel-report");
       if (candidate.familyRoot !== undefined && candidate.familyRoot !== null) strategies.push("report-family");
       if (facetMatched && plan.retrievalProfile?.facet && plan.retrievalProfile.facet !== "general") {
@@ -1867,6 +1941,9 @@ export function rerankLoadedRecords({
         _collectionMatched: collectionMatched,
         _focusCoverage: focusCoverage,
         _subjectMatched: subjectMatched,
+        _subjectCoverage: subjectCoverage,
+        _reportedFamilySubject: reportedFamilySubject,
+        _reportedScenePriority: reportedScenePriority,
       };
     })
     .filter(Boolean)
@@ -1879,7 +1956,7 @@ export function rerankLoadedRecords({
           0.34,
           Math.min(1, Number(plan.retrievalProfile?.minimumFocusCoverage) || 0.6),
         ))
-      && (!plan.retrievalProfile?.requireSubjectMatch || result._subjectMatched)
+      && (!plan.retrievalProfile?.requireSubjectMatch || result._subjectMatched || result._reportedFamilySubject)
       && (!plan.retrievalProfile?.requireFocusFacetProximity || result._focusFacetProximity)
       && (
         !result._titleFocusFacet
@@ -1938,6 +2015,9 @@ export function rerankLoadedRecords({
     _collectionMatched,
     _focusCoverage,
     _subjectMatched,
+    _subjectCoverage,
+    _reportedFamilySubject,
+    _reportedScenePriority,
     ...result
   }) => ({
     ...result,

@@ -3,8 +3,10 @@ import { join } from "node:path";
 
 import {
   expandRelatedCandidates,
+  normalizeText,
   rankPassageCandidates,
   rerankLoadedRecords,
+  stemToken,
 } from "../public/hadith-retrieval-core.mjs";
 
 const DATA_ROOT = join(import.meta.dirname, "..", "public", "hadith-data");
@@ -23,6 +25,43 @@ const [manifest, passageHashes, passageWeights, passageDocuments, passageLengths
 ]);
 
 const loadedShards = new Map();
+
+const REPORTED_FEEDBACK_STOP_WORDS = new Set(
+  "about after al an and are as at be been book by chapter collection for from had has have into is it its hadith imam make making narration not of on one ones or others over people regarding report reward said says section that the their them these this those to under upon volume was were who with".split(" "),
+);
+
+function reportedFeedbackExpansion(result = {}) {
+  const terms = [...new Set(normalizeText(result.chapter || result.title || "")
+    .split(/\s+/)
+    .filter((term) => term.length >= 3
+      && !/^\d+$/.test(term)
+      && !REPORTED_FEEDBACK_STOP_WORDS.has(term)))]
+    .slice(0, 6);
+  if (terms.length < 2) return null;
+  const vocabulary = new Set((manifest?.lexicon || []).map(([term]) => term));
+  const variants = terms.map((term) => {
+    const candidates = new Set([term, stemToken(term)]);
+    if (/e$/.test(term) && term.length > 4) candidates.add(term.slice(0, -1));
+    if (/y$/.test(term) && term.length > 3) {
+      candidates.add(`${term.slice(0, -1)}ied`);
+      candidates.add(`${term.slice(0, -1)}ies`);
+    }
+    if (/s$/.test(term) && term.length > 4) candidates.add(term.slice(0, -1));
+    const attested = [...candidates].filter((candidate) => vocabulary.has(candidate));
+    return attested.length ? attested.slice(0, 3) : [term];
+  });
+  let subjectGroups = [""];
+  for (const choices of variants.slice(0, Math.min(3, variants.length))) {
+    subjectGroups = subjectGroups
+      .flatMap((prefix) => choices.map((choice) => `${prefix} ${choice}`.trim()))
+      .slice(0, 12);
+  }
+  return {
+    query: `${[...new Set(variants.flat())].join(" ")} asked instructed told replied continued cried wept`,
+    subjectGroups,
+    literalAnchors: variants[Math.min(2, variants.length - 1)],
+  };
+}
 
 function parseCorpusChapter(link = "") {
   const match = String(link).match(/\/hadith\/(\d+)\/(\d+)\/(\d+)\/(\d+)/);
@@ -206,16 +245,19 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
   ].filter((query, index, all) => query && all.indexOf(query) === index);
   const isTimingEvidence = retrievalProfile?.facet === "time-definition";
   const isBiographicalEvidence = retrievalProfile?.facet === "biographical-event";
+  const isReportedEvidence = retrievalProfile?.facet === "reported-evidence";
   if (secondaryQueries.length) {
+    const plannedSecondaryCount = secondaryQueries.length;
     const supplementalBuckets = [];
+    const dynamicEvidenceRoles = [...(retrievalProfile?.evidenceRoles || [])];
+    const dynamicSubjectGroups = [...(retrievalProfile?.evidenceQuerySubjects || [])];
+    const dynamicLiteralAnchors = Array.from({ length: plannedSecondaryCount }, () => []);
     for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
       const secondaryQuery = secondaryQueries[queryIndex];
-      const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
-      const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
-      const secondary = await search(secondaryQuery, {
-      resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence ? 8 : 5,
-      filters,
-      retrievalProfile: {
+      const evidenceRole = dynamicEvidenceRoles[queryIndex] || "supporting";
+      const requiredSubjects = dynamicSubjectGroups[queryIndex] || [];
+      const requiredLiteralAnchors = dynamicLiteralAnchors[queryIndex] || [];
+      const secondaryProfile = {
         ...retrievalProfile,
         secondaryQuery: "",
         secondaryQueries: [],
@@ -229,10 +271,11 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
             : secondaryQuery.split(/\s+/).filter(Boolean),
         requireSubjectMatch: isTimingEvidence ? false : true,
         subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
-        minimumSubjectCoverage: retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
-        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence ? false : true,
+        minimumSubjectCoverage: isReportedEvidence || retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
+        allowFullRecordSubjectMatch: !isReportedEvidence || queryIndex < plannedSecondaryCount,
+        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? false : true,
         minimumFocusCoverage: 0.34,
-        disableFocus: isBiographicalEvidence,
+        disableFocus: isBiographicalEvidence || isReportedEvidence,
         requireFocusFacetProximity: false,
         requiredTitlePhrase: retrievalProfile?.facet === "biographical-event"
           ? ""
@@ -240,16 +283,74 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
         requireEntityMatch: retrievalProfile?.facet === "biographical-event"
           ? false
           : retrievalProfile?.requireEntityMatch,
+        familyMinRelation: isBiographicalEvidence ? 0.9 : retrievalProfile?.familyMinRelation,
+        clusterOverlapThreshold: isBiographicalEvidence ? 0.9 : retrievalProfile?.clusterOverlapThreshold,
+        sameChapterOverlapThreshold: isBiographicalEvidence ? 0.86 : retrievalProfile?.sameChapterOverlapThreshold,
+        minUniqueResults: isBiographicalEvidence || isReportedEvidence ? 6 : retrievalProfile?.minUniqueResults,
+        maxUniqueResults: isBiographicalEvidence ? 8 : retrievalProfile?.maxUniqueResults,
+        parallelReserve: isBiographicalEvidence || isReportedEvidence ? 1 : retrievalProfile?.parallelReserve,
+        maxFamilyMembers: isReportedEvidence ? 2 : retrievalProfile?.maxFamilyMembers,
         rewritten: true,
         relaxed: true,
-      },
+      };
+      const secondaryRanked = rankPassageCandidates({
+        manifest,
+        passageHashes,
+        passageWeights,
+        passageDocuments,
+        passageLengths,
+        query: secondaryQuery,
+        filters,
+        retrievalProfile: secondaryProfile,
+        limit: Math.max(120, Math.min(360, Number(retrievalProfile?.candidateLimit) || 240)),
       });
-      supplementalBuckets.push(secondary.results.map((result) => ({ ...result, evidenceRole })));
+      if (!secondaryRanked.candidates.length) continue;
+      const secondaryRecords = await loadCandidateRecords(secondaryRanked.candidates);
+      let supplementalBucket = rerankLoadedRecords({
+        manifest,
+        plan: secondaryRanked.plan,
+        candidates: secondaryRanked.candidates,
+        records: secondaryRecords,
+        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence || isReportedEvidence ? 8 : 5,
+      }).map((result) => ({ ...result, evidenceRole }));
+      if (requiredLiteralAnchors.length) {
+        supplementalBucket = supplementalBucket.filter((result) => {
+          const literalTokens = new Set(normalizeText(`${result.title} ${result.chapter} ${result.text}`).split(/\s+/));
+          return requiredLiteralAnchors.some((anchor) => literalTokens.has(anchor));
+        });
+      }
+      supplementalBuckets.push(supplementalBucket);
+      const hasCompoundReportedSubject = requiredSubjects.some((group) => (
+        normalizeText(group).split(/\s+/).filter(Boolean).length >= 2
+      ));
+      if (isReportedEvidence && queryIndex === 0 && hasCompoundReportedSubject && supplementalBucket[0]) {
+        const feedback = reportedFeedbackExpansion(supplementalBucket[0]);
+        if (feedback?.query && !secondaryQueries.includes(feedback.query)) {
+          secondaryQueries.push(feedback.query);
+          dynamicEvidenceRoles.push(evidenceRole);
+          dynamicSubjectGroups.push(feedback.subjectGroups);
+          dynamicLiteralAnchors.push(feedback.literalAnchors);
+        }
+      }
+    }
+    const usedReportedFeedback = isReportedEvidence
+      && supplementalBuckets.length > plannedSecondaryCount
+      && supplementalBuckets[plannedSecondaryCount]?.length;
+    let mergeBuckets = supplementalBuckets;
+    if (usedReportedFeedback) {
+      const feedbackKeys = new Set(supplementalBuckets.slice(1).flat()
+        .map((result) => result.link || result.id));
+      const initialAnchorKey = supplementalBuckets[0][0]?.link || supplementalBuckets[0][0]?.id;
+      const anchoredOriginal = supplementalBuckets[0].filter((result) => {
+        const key = result.link || result.id;
+        return key === initialAnchorKey || feedbackKeys.has(key);
+      });
+      mergeBuckets = [anchoredOriginal, ...supplementalBuckets.slice(1)];
     }
     const supplementalResults = [];
-    const maxBucketLength = Math.max(0, ...supplementalBuckets.map((bucket) => bucket.length));
+    const maxBucketLength = Math.max(0, ...mergeBuckets.map((bucket) => bucket.length));
     for (let index = 0; index < maxBucketLength; index += 1) {
-      for (const bucket of supplementalBuckets) {
+      for (const bucket of mergeBuckets) {
         if (bucket[index]) supplementalResults.push(bucket[index]);
       }
     }
@@ -259,11 +360,16 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       if (seenSupplemental.has(key)) return false;
       seenSupplemental.add(key);
       return true;
-    }).slice(0, Math.max(1, Math.min(isTimingEvidence ? 8 : 6, Number(retrievalProfile?.secondaryPromotionLimit) || 3)));
+    }).slice(0, Math.max(1, Math.min(
+      isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? 10 : 6,
+      Number(retrievalProfile?.secondaryPromotionLimit) || 3,
+    )));
     const promotedKeys = new Set(promotedSupplemental.map((result) => result.link || result.id));
     results = [
       ...promotedSupplemental,
-      ...results.filter((result) => !promotedKeys.has(result.link || result.id)),
+      ...(usedReportedFeedback && promotedSupplemental.length
+        ? []
+        : results.filter((result) => !promotedKeys.has(result.link || result.id))),
     ].slice(0, resultLimit);
   }
   return { candidates, expandedCandidates, results };

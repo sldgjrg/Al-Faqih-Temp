@@ -431,6 +431,23 @@ export function importanceEvidenceSynthesis(results) {
   return topicEvidenceSynthesis(results, [/\b(?:taqiy|religion|faith|piety|important|necessity|denial)\b/i], "the requested importance or religious significance");
 }
 
+export function reportedEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const direct = available.find((result) => result?.evidenceRole === "reported-practice") || available[0];
+  if (!direct) return "";
+  const reportNumber = available.indexOf(direct) + 1;
+  const translation = publishedTranslation(direct.text, direct.evidenceTerms || []);
+  return [
+    "## Direct answer", "",
+    `Report ${reportNumber} most directly preserves the requested act or event in a narrated scene:`, "",
+    translation.split(/\n+/).map((line) => `> ${line}`).join("\n>"), "",
+    "## Evidence", "",
+    `Report ${reportNumber}, ${direct.collection}, â€œ${direct.chapter || direct.title}.â€ The remaining displayed reports provide other direct narrations or parallel transmissions about the same requested subject.`, "",
+    "## Limits of the evidence", "",
+    "This reproduces the retrieved reports without adding a chain grade or a ruling that their wording does not state.",
+  ].join("\n");
+}
+
 function resultSource(result, index) {
   return [
     `REPORT ${index + 1}`,

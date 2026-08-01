@@ -12,6 +12,7 @@ import {
   importanceEvidenceSynthesis,
   methodEvidenceSynthesis,
   parseQueryAnalysisJson,
+  reportedEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
   virtueEvidenceSynthesis,
@@ -88,8 +89,8 @@ assert.equal(
   "a plainly stated martyrdom question must stay on the fast deterministic retrieval path",
 );
 assert.ok(
-  ridaMartyrdom.results.slice(0, 6).some(({ link }) => link.includes("/12/1/33/1")),
-  "Imam al-Rida's martyrdom must include Abu Salt's direct poisoned-grapes account from Uyun",
+  ridaMartyrdom.results.slice(0, 8).some(({ link }) => link.includes("/12/1/33/1")),
+  `Imam al-Rida's martyrdom must include Abu Salt's direct poisoned-grapes account from Uyun; got ${ridaMartyrdom.results.map(({ link }) => link).join(", ")}`,
 );
 assert.ok(
   ["/12/1/31/1", "/12/1/32/1", "/12/1/34/1"].filter((link) => hasLink(ridaMartyrdom.results, link)).length >= 2,
@@ -99,6 +100,31 @@ assert.ok(
 const terseRidaMartyrdom = resolveLocalConversation("martyrdom imam rida", { messages: [] }, {}, manifest);
 assert.equal(terseRidaMartyrdom.retrievalProfile.facet, "biographical-event");
 assert.equal(terseRidaMartyrdom.retrievalProfile.needsQueryAnalysis, false);
+
+const elegyReports = await routedSearch("what has been said regarding reciting elegies of karbala");
+assert.equal(elegyReports.route.retrievalProfile.facet, "reported-evidence");
+assert.equal(
+  elegyReports.route.retrievalProfile.needsQueryAnalysis,
+  false,
+  "a direct request for narrated evidence must remain on the fast deterministic path",
+);
+assert.ok(
+  elegyReports.results.slice(0, 4).some(({ link }) => link.includes("/24/2/33/1")),
+  `an elegy query must lead with the report where the Imam requests the grief-stricken recitation and asks for more; got ${elegyReports.results.map(({ link }) => link).join(", ")}`,
+);
+assert.ok(
+  ["/29/1/29/6", "/8/1/263/1", "/23/2/146/", "/12/1/36/34", "/24/2/29/2", "/24/2/29/10"]
+    .filter((link) => hasLink(elegyReports.results, link)).length >= 2,
+  "the exact scene report must be accompanied by other directly relevant elegy report families",
+);
+assert.ok(
+  !hasLink(elegyReports.results, "/12/1/13/1") && !hasLink(elegyReports.results, "/24/2/72/8"),
+  "generic poetry and Qur'an recitation reports must not leak into a Karbala elegy answer",
+);
+const elegySynthesis = reportedEvidenceSynthesis(elegyReports.results);
+assert.match(elegySynthesis, /recite (?:a )?poem|recite \[an elegy\]/i);
+assert.match(elegySynthesis, /cried|wept/i);
+assert.doesNotMatch(elegySynthesis, /Qul Huwa Allah|fifteenth of Sha/i);
 
 for (const [variant, expected] of [
   ["aqeeqah", "aqiqah"],

@@ -2,7 +2,7 @@ import { resolveBookAuthorship } from "./book-catalog.js";
 import { cleanCorpusDisplay } from "./corpus-display.js";
 
 const ENGLISH_STOP_WORDS = new Set(
-  "a about an and are as at be can could did do does for from had has have how i if in into is it me my of on or please tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
+  "a about an and are as at be been can concerning could did do does for from had has have how i if in into is it me my narrated of on or please regarding related reported said tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
 );
 
 const GENERIC_QUERY_WORDS = new Set(
@@ -347,6 +347,26 @@ const RETRIEVAL_FACETS = [
     relatedFloorRatio: 0.32,
   },
   {
+    // Questions framed as “what has been narrated regarding X” ask for
+    // answer-bearing report scenes, not merely documents sharing one word
+    // with X. The subject itself is extracted dynamically below.
+    name: "reported-evidence",
+    pattern: /\b(?:what\s+(?:has|have|is|was)\s+been\s+(?:said|reported|narrated|related)\s+(?:about|regarding|on|concerning)|(?:find|show|give|bring|cite|search(?:\s+for)?)\b.{0,36}\b(?:hadith|ahadith|narrations?|reports?|riwaya|riwayat)\s+(?:about|regarding|on|concerning)|(?:hadith|ahadith|narrations?|reports?|riwaya|riwayat)\s+(?:about|regarding|on|concerning))\b/i,
+    scriptPattern: /(?:Ø±ÙˆØ§ÛŒØ§Øª|Ø±ÙˆØ§ÙŠØ§Øª|Ø£Ø­Ø§Ø¯ÙŠØ«|Ø§Ø­Ø§Ø¯ÛŒØ«).{0,24}(?:Ø¹Ù†|Ø­ÙˆÙ„|Ú©Û’ Ø¨Ø§Ø±Û’)/u,
+    strict: false,
+    terms: [],
+    resultLimit: 10,
+    maxDirectResults: 8,
+    maxFamilyMembers: 6,
+    maxPerChapter: 4,
+    minUniqueResults: 3,
+    maxUniqueResults: 8,
+    secondaryPromotionLimit: 6,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.38,
+    relatedFloorRatio: 0.3,
+  },
+  {
     name: "legal-practical",
     pattern: /\b(?:allowed|permitted|permissible|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|(?:can|could|may|should|must)\s+(?!you\b)\S+|what\s+should\s+i\s+do)\b/i,
     scriptPattern: /(?:يجوز|لا يجوز|واجب|مستحب|حرام|حلال|نجس|طاهر|حكم|کیا میں|جائز|ناجائز)/u,
@@ -421,6 +441,7 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueri
   if (facet?.name === "time-definition") return true;
   if (glossaryQueries.length || facet?.name === "biographical-event") return false;
   if (facet?.name === "virtues" || facet?.name === "importance") return false;
+  if (facet?.name === "reported-evidence") return false;
   if (facet?.name === "method") {
     // Short procedure requests stay on the retrieval fast path. If their
     // first hit is only an exception or a special case, the worker expands
@@ -524,6 +545,64 @@ function corpusVocabulary(manifest) {
   return vocabulary;
 }
 
+function corpusMorphologyVariants(term, manifest) {
+  const token = normalize(term).replace(/[^a-z0-9]/g, "");
+  if (!token) return [];
+  const vocabulary = corpusVocabulary(manifest).exact;
+  const candidates = new Set([token]);
+  if (/(?:ies|ied)$/.test(token) && token.length > 4) {
+    candidates.add(`${token.slice(0, -3)}y`);
+    candidates.add(token.slice(0, -3));
+  }
+  if (/ing$/.test(token) && token.length > 5) {
+    const base = token.slice(0, -3);
+    candidates.add(base);
+    candidates.add(`${base}e`);
+    if (/(.)\1$/.test(base)) candidates.add(base.slice(0, -1));
+  }
+  if (/ed$/.test(token) && token.length > 4) {
+    const base = token.slice(0, -2);
+    candidates.add(base);
+    candidates.add(`${base}e`);
+  }
+  if (/es$/.test(token) && token.length > 4) {
+    candidates.add(token.slice(0, -1));
+    candidates.add(token.slice(0, -2));
+  } else if (/s$/.test(token) && token.length > 4) {
+    candidates.add(token.slice(0, -1));
+  }
+  const attested = [...candidates].filter((candidate) => vocabulary.has(candidate));
+  return attested.length ? attested.slice(0, 3) : [token];
+}
+
+function reportedEvidencePlan(normalized, manifest) {
+  const introduction = /(?:what\s+(?:has|have|is|was)\s+been\s+(?:said|reported|narrated|related)|(?:find|show|give|bring|cite|search(?:\s+for)?)\b.{0,36}\b(?:hadith|ahadith|narrations?|reports?|riwaya|riwayat)|(?:hadith|ahadith|narrations?|reports?|riwaya|riwayat))\s+(?:about|regarding|on|concerning)\s+(.+)$/i;
+  const subject = normalized.match(introduction)?.[1] || "";
+  if (!subject) return { queryTerms: [], subjectGroups: [] };
+  let words = subject.replace(/[^a-z0-9\s-]+/g, " ").split(/\s+/).filter(Boolean);
+  if (/ing$/.test(words[0] || "")) {
+    const qualifier = words.findIndex((word, index) => index >= 2 && /^(?:as|at|during|for|from|in|of|with)$/.test(word));
+    if (qualifier > 1) words = words.slice(0, qualifier);
+  }
+  const core = words.filter((word) => word.length >= 3
+    && !ENGLISH_STOP_WORDS.has(word)
+    && !GENERIC_QUERY_WORDS.has(word)
+    && !/^(?:hadith|ahadith|narration|narrations|report|reports|riwaya|riwayat)$/.test(word))
+    .slice(0, 4);
+  if (!core.length) return { queryTerms: [], subjectGroups: [] };
+  const variantSets = core.map((term) => corpusMorphologyVariants(term, manifest));
+  let subjectGroups = [""];
+  for (const variants of variantSets) {
+    subjectGroups = subjectGroups
+      .flatMap((prefix) => variants.map((variant) => `${prefix} ${variant}`.trim()))
+      .slice(0, 12);
+  }
+  return {
+    queryTerms: [...new Set(variantSets.flat())],
+    subjectGroups: [...new Set(subjectGroups)].filter(Boolean),
+  };
+}
+
 function hasFrequentCorpusAnchor(query, manifest, intentTerms = []) {
   const intentVocabulary = new Set(
     intentTerms
@@ -584,9 +663,13 @@ export function buildReligiousSearchPlan(query, manifest) {
     : asksForBirthEvent
       ? ["birth", "born", "date", "month", "year", "place", "mother", "father"]
       : facet?.name === "biographical-event" ? facet.terms : [];
-  const biographicalEvidenceQuery = asksForDeathEvent && entity.detected
-    ? `${entity.searchAliases?.[0] || entity.text} martyrdom cause killer final illness death burial`
-    : "";
+  const biographicalEvidenceQueries = asksForDeathEvent && entity.detected
+    ? [
+        `${entity.searchAliases?.[0] || entity.text} martyrdom death cause killer murdered`,
+        `${entity.searchAliases?.[0] || entity.text} poison poisoned grapes pomegranate final illness`,
+        `${entity.searchAliases?.[0] || entity.text} burial grave funeral final moments`,
+      ]
+    : [];
   const subjectTerms = normalized.split(/\s+/)
     .filter((token) => token.length >= 4
       && !ENGLISH_STOP_WORDS.has(token)
@@ -595,6 +678,12 @@ export function buildReligiousSearchPlan(query, manifest) {
     .slice(0, 4);
   const importanceEvidenceQuery = facet?.name === "importance" && subjectTerms.length
     ? `${subjectTerms.join(" ")} denial religion faith piety necessity`
+    : "";
+  const reportedEvidence = facet?.name === "reported-evidence"
+    ? reportedEvidencePlan(normalized, manifest)
+    : { queryTerms: [], subjectGroups: [] };
+  const reportedEvidenceQuery = reportedEvidence.queryTerms.length
+    ? `${[...new Set([...reportedEvidence.queryTerms, ...subjectTerms])].join(" ")} asked instructed replied continued observed`
     : "";
   const expansionParts = [semanticGlossQuery || original, entity.text];
   const expandMethodContext = facet?.name === "method"
@@ -637,17 +726,19 @@ export function buildReligiousSearchPlan(query, manifest) {
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
-      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery, biographicalEvidenceQuery].filter(Boolean),
-      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery, biographicalEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
+      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery, ...biographicalEvidenceQueries, reportedEvidenceQuery].filter(Boolean),
+      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery, ...biographicalEvidenceQueries, reportedEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
       evidenceRoles: [
         definitionEvidenceQuery ? "definition-detail" : "",
         importanceEvidenceQuery ? "importance-context" : "",
-        biographicalEvidenceQuery ? "event-detail" : "",
+        ...biographicalEvidenceQueries.map((_, index) => ["death-cause", "final-illness", "burial-event"][index]),
+        reportedEvidenceQuery ? "reported-practice" : "",
       ].filter(Boolean),
       evidenceQuerySubjects: [
         definitionEvidenceQuery ? [semanticHeadTerm] : [],
         importanceEvidenceQuery ? subjectTerms : [],
-        biographicalEvidenceQuery ? entity.searchAliases : [],
+        ...biographicalEvidenceQueries.map(() => entity.searchAliases),
+        reportedEvidenceQuery ? reportedEvidence.subjectGroups : [],
       ].filter((group) => group.length),
       resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
@@ -670,8 +761,8 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQuery
-        ? 6
+      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQueries.length || reportedEvidenceQuery
+        ? biographicalEvidenceQueries.length ? 8 : 6
         : (facet?.secondaryPromotionLimit || 4),
     },
   };

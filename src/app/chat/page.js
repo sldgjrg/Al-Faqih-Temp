@@ -35,6 +35,7 @@ import {
   parseElucidationJson,
   parseQueryAnalysisJson,
   queryAnalysisMessages,
+  reportedEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
   virtueEvidenceSynthesis,
@@ -981,12 +982,16 @@ export default function LocalHadithChat() {
         const importanceSynthesis = data.results.length && pending?.retrievalProfile?.facet === "importance"
           ? importanceEvidenceSynthesis(synthesisEvidence)
           : "";
+        const reportedSynthesis = data.results.length && pending?.retrievalProfile?.facet === "reported-evidence"
+          ? reportedEvidenceSynthesis(synthesisEvidence)
+          : "";
         const sourceSynthesis = methodSynthesis
           || timeSynthesis
           || definitionSynthesis
           || biographicalSynthesis
           || virtueSynthesis
-          || importanceSynthesis;
+          || importanceSynthesis
+          || reportedSynthesis;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
           conversation.id === conversationId
