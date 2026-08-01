@@ -67,6 +67,15 @@ function conversationGenerationOptions(query) {
   };
 }
 
+function needsMobileSafeModel() {
+  if (typeof window === "undefined") return false;
+  const narrowViewport = window.matchMedia("(max-width: 860px)").matches;
+  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const mobileBrowser = Boolean(navigator.userAgentData?.mobile);
+  const deviceMemory = Number(navigator.deviceMemory || 0);
+  return mobileBrowser || narrowViewport || coarsePointer || (deviceMemory > 0 && deviceMemory <= 4);
+}
+
 function CalligraphyEffect({ source }) {
   const canvasRef = useRef(null);
 
@@ -329,12 +338,20 @@ function TypeLine({ children }) {
 
 function ResultCard({ result, index, open = false, parallel = false }) {
   const displayTitle = cleanCorpusDisplay(result.title);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const mobile = window.matchMedia("(max-width: 860px)").matches;
+    if (!mobile) setExpanded(true);
+  }, [open]);
+
   return (
     <article
       className={`result-card ${parallel ? "parallel-result-card" : ""}`}
       style={{ "--result-delay": `${index * 85}ms` }}
     >
-      <details open={open}>
+      <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary>
           <span className="result-number">{parallel ? "↳" : String(index + 1).padStart(2, "0")}</span>
           <span className="result-heading">
@@ -348,7 +365,7 @@ function ResultCard({ result, index, open = false, parallel = false }) {
             {Math.max(1, Math.min(99, Math.round(result.score * 100)))}%
           </span>
         </summary>
-        <div className="result-detail">
+        {expanded && <div className="result-detail">
           <div className="result-tags">
             {result.imams.map((imam) => <span key={imam}>{imam}</span>)}
             {result.strategies.map((strategy) => <span key={strategy}>{strategy}</span>)}
@@ -362,7 +379,7 @@ function ResultCard({ result, index, open = false, parallel = false }) {
           <div className="hadith-markdown">
             <ReactMarkdown>{cleanCorpusMarkdown(result.text)}</ReactMarkdown>
           </div>
-        </div>
+        </div>}
       </details>
     </article>
   );
@@ -797,8 +814,9 @@ export default function LocalHadithChat() {
       }
     }
 
+    const mobileSafeModel = needsMobileSafeModel();
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=25", {
+      chatWorker = new Worker("/local-llm.worker.js?v=26", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -836,7 +854,18 @@ export default function LocalHadithChat() {
     };
 
     navigator.storage?.persist?.().catch(() => {});
-    chatWorker.postMessage({ type: "init" });
+    chatWorker.postMessage({ type: "configure", preferSmallModel: mobileSafeModel });
+    if (mobileSafeModel) {
+      setModelState({
+        status: "deferred",
+        message: "The compact local model will load only if a generated answer needs it",
+        percent: null,
+        device: "webgpu",
+        detail: "Hadith retrieval does not load the language model",
+      });
+    } else {
+      chatWorker.postMessage({ type: "init" });
+    }
 
     return () => {
       chatWorkerRef.current = null;
@@ -854,7 +883,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=29", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=30", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -1516,7 +1545,9 @@ export default function LocalHadithChat() {
                 ? "Local language model ready"
                 : modelState.status === "error"
                   ? "Local model error"
-                  : "Loading local language model"}
+                  : modelState.status === "deferred"
+                    ? "Local model available on demand"
+                    : "Loading local language model"}
             </strong>
             <span>
               {modelState.message}

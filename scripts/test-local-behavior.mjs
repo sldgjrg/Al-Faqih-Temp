@@ -30,10 +30,24 @@ const genericRuntimeSources = await Promise.all([
   "../src/app/chat/page.js",
   "../public/hadith-search.worker.js",
 ].map((path) => readFile(new URL(path, import.meta.url), "utf8")));
+const localModelWorkerSource = await readFile(
+  new URL("../public/local-llm.worker.js", import.meta.url),
+  "utf8",
+);
 assert.doesNotMatch(
   genericRuntimeSources.join("\n"),
   /\b(?:tatbir|tatbeer|zanjeer|zanjir|female\s+wax|sell\s+alcohol|mourningQuestion)\b/i,
   "runtime retrieval and synthesis must not contain topic-specific branches",
+);
+assert.doesNotMatch(
+  localModelWorkerSource.split("self.onmessage")[0],
+  /\nensureEngine\(\)\.catch/,
+  "the WebGPU model must not allocate itself merely because the page opened",
+);
+assert.match(
+  localModelWorkerSource,
+  /data\.type === "configure"[\s\S]+preferSmallModel/,
+  "the model worker must accept the mobile-safe model preference before loading",
 );
 
 async function routedSearch(query, profileUpdate = {}) {
@@ -65,6 +79,26 @@ async function analyzedSearch(query, analysis, profileUpdate = {}) {
 function hasLink(results, fragment) {
   return results.some(({ link }) => link.includes(fragment));
 }
+
+const ridaMartyrdom = await routedSearch("Can you inform me about the event of the martyrdom of imam rida");
+assert.equal(ridaMartyrdom.route.retrievalProfile.facet, "biographical-event");
+assert.equal(
+  ridaMartyrdom.route.retrievalProfile.needsQueryAnalysis,
+  false,
+  "a plainly stated martyrdom question must stay on the fast deterministic retrieval path",
+);
+assert.ok(
+  ridaMartyrdom.results.slice(0, 6).some(({ link }) => link.includes("/12/1/33/1")),
+  "Imam al-Rida's martyrdom must include Abu Salt's direct poisoned-grapes account from Uyun",
+);
+assert.ok(
+  ["/12/1/31/1", "/12/1/32/1", "/12/1/34/1"].filter((link) => hasLink(ridaMartyrdom.results, link)).length >= 2,
+  "the martyrdom event must include multiple direct Uyun report families when available",
+);
+
+const terseRidaMartyrdom = resolveLocalConversation("martyrdom imam rida", { messages: [] }, {}, manifest);
+assert.equal(terseRidaMartyrdom.retrievalProfile.facet, "biographical-event");
+assert.equal(terseRidaMartyrdom.retrievalProfile.needsQueryAnalysis, false);
 
 for (const [variant, expected] of [
   ["aqeeqah", "aqiqah"],

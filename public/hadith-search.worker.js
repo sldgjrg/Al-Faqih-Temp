@@ -745,6 +745,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
       const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
       const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
       const isTimingEvidence = retrievalProfile?.facet === "time-definition";
+      const isBiographicalEvidence = retrievalProfile?.facet === "biographical-event";
       const secondaryProfile = {
         ...retrievalProfile,
         secondaryQuery: "",
@@ -765,10 +766,16 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         requireSubjectMatch: isTimingEvidence ? false : true,
         subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
         minimumSubjectCoverage: retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
-        requireFocusCoverage: isTimingEvidence ? false : true,
+        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence ? false : true,
         minimumFocusCoverage: 0.34,
-        disableFocus: false,
+        disableFocus: isBiographicalEvidence,
         requireFocusFacetProximity: false,
+        // A named person can appear under a kunya, epithet, or a different
+        // transliteration in the chapter heading. The supplemental query
+        // already requires the entity subject, so do not reapply the main
+        // query's rigid canonical-title phrase here.
+        requiredTitlePhrase: isBiographicalEvidence ? "" : retrievalProfile?.requiredTitlePhrase,
+        requireEntityMatch: isBiographicalEvidence ? false : retrievalProfile?.requireEntityMatch,
         rewritten: true,
         relaxed: true,
       };
@@ -791,7 +798,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         plan: secondaryRanked.plan,
         candidates: secondaryRanked.candidates,
         records: secondaryRecords,
-        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" ? 8 : 5,
+        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence ? 8 : 5,
       }).map((result) => ({ ...result, evidenceRole })));
     }
     const supplementalResults = [];

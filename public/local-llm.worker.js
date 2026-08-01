@@ -16,6 +16,7 @@ const MODEL_OPTIONS = [
 let MODEL_ID = MODEL_OPTIONS[0].id;
 let MODEL_LABEL = MODEL_OPTIONS[0].label;
 let APPROXIMATE_DOWNLOAD_MB = MODEL_OPTIONS[0].approximateDownloadMb;
+let preferSmallModel = false;
 
 let webllmPromise;
 let enginePromise;
@@ -67,7 +68,10 @@ function progressPercent(report) {
 async function createEngine() {
   await requireWebGPU();
   const webllm = await loadWebLLM();
-  const availableModels = MODEL_OPTIONS
+  // Constrained browsers get only the compact model. Falling through to the
+  // 1.5B model after a compact-model failure can make a mobile tab reload.
+  const modelOptions = preferSmallModel ? MODEL_OPTIONS.slice(-1) : MODEL_OPTIONS;
+  const availableModels = modelOptions
     .map((option) => ({
       option,
       record: webllm.prebuiltAppConfig?.model_list?.find((item) => item.model_id === option.id),
@@ -341,16 +345,40 @@ async function generate(data) {
 }
 
 post("worker-ready", {
-  message: `Starting ${MODEL_LABEL} with the optimized WebLLM WebGPU runtime`,
+  message: `${MODEL_LABEL} is available on demand through the WebLLM WebGPU runtime`,
   model: MODEL_ID,
   modelLabel: MODEL_LABEL,
 });
 
-ensureEngine().catch(() => {});
-
 self.onmessage = ({ data }) => {
   if (!data || typeof data !== "object") return;
-  if (data.type === "ping" || data.type === "init") {
+  if (data.type === "configure") {
+    if (!engine && !enginePromise) {
+      preferSmallModel = Boolean(data.preferSmallModel);
+      const selected = preferSmallModel ? MODEL_OPTIONS.at(-1) : MODEL_OPTIONS[0];
+      MODEL_ID = selected.id;
+      MODEL_LABEL = selected.label;
+      APPROXIMATE_DOWNLOAD_MB = selected.approximateDownloadMb;
+    }
+    post("model-status", {
+      status: "deferred",
+      message: `${MODEL_LABEL} will load only when a generated answer needs it`,
+      percent: null,
+      device: "webgpu",
+      model: MODEL_ID,
+      modelLabel: MODEL_LABEL,
+    });
+    return;
+  }
+  if (data.type === "ping") {
+    post("worker-ready", {
+      message: `${MODEL_LABEL} is available on demand through the WebLLM WebGPU runtime`,
+      model: MODEL_ID,
+      modelLabel: MODEL_LABEL,
+    });
+    return;
+  }
+  if (data.type === "init") {
     ensureEngine().catch(() => {});
     return;
   }

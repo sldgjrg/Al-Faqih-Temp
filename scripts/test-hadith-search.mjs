@@ -205,6 +205,7 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     ...(retrievalProfile?.secondaryQuery ? [retrievalProfile.secondaryQuery] : []),
   ].filter((query, index, all) => query && all.indexOf(query) === index);
   const isTimingEvidence = retrievalProfile?.facet === "time-definition";
+  const isBiographicalEvidence = retrievalProfile?.facet === "biographical-event";
   if (secondaryQueries.length) {
     const supplementalBuckets = [];
     for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
@@ -212,7 +213,7 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       const evidenceRole = retrievalProfile?.evidenceRoles?.[queryIndex] || "supporting";
       const requiredSubjects = retrievalProfile?.evidenceQuerySubjects?.[queryIndex] || [];
       const secondary = await search(secondaryQuery, {
-      resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" ? 8 : 5,
+      resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence ? 8 : 5,
       filters,
       retrievalProfile: {
         ...retrievalProfile,
@@ -229,10 +230,16 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
         requireSubjectMatch: isTimingEvidence ? false : true,
         subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
         minimumSubjectCoverage: retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
-        requireFocusCoverage: isTimingEvidence ? false : true,
+        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence ? false : true,
         minimumFocusCoverage: 0.34,
-        disableFocus: false,
+        disableFocus: isBiographicalEvidence,
         requireFocusFacetProximity: false,
+        requiredTitlePhrase: retrievalProfile?.facet === "biographical-event"
+          ? ""
+          : retrievalProfile?.requiredTitlePhrase,
+        requireEntityMatch: retrievalProfile?.facet === "biographical-event"
+          ? false
+          : retrievalProfile?.requireEntityMatch,
         rewritten: true,
         relaxed: true,
       },

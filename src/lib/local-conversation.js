@@ -74,6 +74,26 @@ const IMAM_NAME_GLOSSES = new Map(Object.entries({
   askari: "Abu Muhammad al-Hassan ibn Ali",
 }));
 
+// Alternate spellings actually used across the corpus metadata. Keeping
+// these with entity resolution lets every relation query (birth, death,
+// sayings, appearance, and so on) survive transliteration differences.
+const IMAM_SEARCH_ALIASES = new Map(Object.entries({
+  ali: ["Imam Ali", "Ali ibn Abi Talib"],
+  hasan: ["Imam Hasan", "Imam al-Hasan"],
+  hassan: ["Imam Hassan", "Imam al-Hassan"],
+  husayn: ["Imam Husayn", "Imam al-Husayn"],
+  hussain: ["Imam Hussain", "Imam al-Husayn"],
+  sajjad: ["Imam al-Sajjad", "Zayn al-Abidin"],
+  baqir: ["Imam al-Baqir", "Abu Jafar Muhammad ibn Ali"],
+  sadiq: ["Imam al-Sadiq", "Jafar ibn Muhammad"],
+  kazim: ["Imam al-Kazim", "Imam al-Kadhim", "Musa ibn Jafar"],
+  rida: ["Ar Ridha", "Imam al-Ridha", "Ali ibn Musa al-Rida"],
+  ridha: ["Ar Ridha", "Imam al-Ridha", "Ali ibn Musa al-Rida"],
+  jawad: ["Imam al-Jawad", "Muhammad ibn Ali al-Jawad"],
+  hadi: ["Imam al-Hadi", "Ali ibn Muhammad al-Hadi"],
+  askari: ["Imam al-Askari", "Abu Muhammad al-Hassan ibn Ali"],
+}));
+
 const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
@@ -193,7 +213,7 @@ const RETRIEVAL_FACETS = [
   },
   {
     name: "biographical-event",
-    pattern: /\b(?:(?:when|where|how)\b.{0,72}\b(?:born|birth|died|death|martyred|martyrdom|passed\s+away)|(?:birth|born|death|died|martyrdom)\s+(?:of|date|place|year|month|age))\b/i,
+    pattern: /\b(?:(?:when|where|how)\b.{0,72}\b(?:born|birth|died|death|martyred|martyrdom|demise|murdered|poisoned|passed\s+away)|(?:birth|born|death|died|martyrdom|demise|murder|poisoning)\s+(?:of|date|place|year|month|age)|(?:martyrdom|demise|murder|poisoning)\b.{0,64}\b(?:imam|prophet|lady))\b/i,
     scriptPattern: /(?:ولادت|پیدائش|وفات|شہادت|ولد|ولادة|توفي|وفاة|استشهد|شهادة)/u,
     strict: false,
     terms: [
@@ -348,11 +368,12 @@ function entityExpansion(query, normalized) {
     return {
       text: needsCanonicalAlias ? "Imam al-Mahdi al-Qaim" : "",
       terms: ["mahdi", "qaim", "zaman", "master of the age", "man of this matter", "sahib al-amr", "المهدي", "القائم", "صاحب الزمان", "صاحب الامر"],
+      searchAliases: ["Imam al-Mahdi", "al-Qaim", "Sahib al-Amr"],
       detected: true,
     };
   }
   const namedImam = normalized.match(/\bimam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,4})/iu);
-  if (!namedImam) return { text: "", terms: [], detected: false };
+  if (!namedImam) return { text: "", terms: [], searchAliases: [], detected: false };
   const relationBoundaries = new Set(
     "about appearance born birth die died death do does did look looks looked mean means rule ruled say said when where why how was were is are can could should".split(" "),
   );
@@ -361,16 +382,24 @@ function entityExpansion(query, normalized) {
     if (relationBoundaries.has(token)) break;
     entityTokens.push(token);
   }
-  const entityName = entityTokens.slice(0, 3).join(" ");
-  const aliasKey = entityTokens.filter((token) => token !== "al").at(-1) || "";
+  const recognizedAliasIndex = entityTokens.reduce(
+    (found, token, index) => IMAM_NAME_GLOSSES.has(token) ? index : found,
+    -1,
+  );
+  const boundedEntityTokens = recognizedAliasIndex >= 0
+    ? entityTokens.slice(0, recognizedAliasIndex + 1)
+    : entityTokens.slice(0, 3);
+  const entityName = boundedEntityTokens.join(" ");
+  const aliasKey = boundedEntityTokens.filter((token) => token !== "al").at(-1) || "";
   const corpusName = IMAM_NAME_GLOSSES.get(aliasKey) || "";
   return entityName
     ? {
         text: corpusName,
-        terms: corpusName ? [corpusName, entityName] : [entityName],
+        terms: [...new Set([corpusName, entityName, ...(IMAM_SEARCH_ALIASES.get(aliasKey) || [])].filter(Boolean))],
+        searchAliases: IMAM_SEARCH_ALIASES.get(aliasKey) || [entityName],
         detected: true,
       }
-    : { text: "", terms: [], detected: false };
+    : { text: "", terms: [], searchAliases: [], detected: false };
 }
 
 function requestedCollection(query, manifest) {
@@ -546,6 +575,18 @@ export function buildReligiousSearchPlan(query, manifest) {
   const definitionEvidenceQuery = semanticHeadTerm && facet?.name === "definition"
     ? `${semanticHeadTerm} creature greater than angel accompanies protects knowledge`
     : "";
+  const asksForDeathEvent = facet?.name === "biographical-event"
+    && /\b(?:died|death|martyr|martyrdom|martyred|demise|murder|murdered|kill|killed|poison|poisoned|passed\s+away)\b/i.test(normalized);
+  const asksForBirthEvent = facet?.name === "biographical-event"
+    && /\b(?:born|birth|birthday|wiladah|wiladat)\b/i.test(normalized);
+  const biographicalRelationTerms = asksForDeathEvent
+    ? ["martyrdom", "martyred", "death", "died", "cause", "killer", "final illness", "burial"]
+    : asksForBirthEvent
+      ? ["birth", "born", "date", "month", "year", "place", "mother", "father"]
+      : facet?.name === "biographical-event" ? facet.terms : [];
+  const biographicalEvidenceQuery = asksForDeathEvent && entity.detected
+    ? `${entity.searchAliases?.[0] || entity.text} martyrdom cause killer final illness death burial`
+    : "";
   const subjectTerms = normalized.split(/\s+/)
     .filter((token) => token.length >= 4
       && !ENGLISH_STOP_WORDS.has(token)
@@ -579,7 +620,10 @@ export function buildReligiousSearchPlan(query, manifest) {
       methodSubjectTerms,
       strictFacet: Boolean(facet?.strict),
       requiredTerms: facet?.strict ? facet.terms : [],
-      boostTerms: [...(facet?.terms || []), ...subjectTerms],
+      boostTerms: [
+        ...(facet?.name === "biographical-event" ? biographicalRelationTerms : (facet?.terms || [])),
+        ...subjectTerms,
+      ],
       entityTerms: entity.terms,
       requireEntityMatch: entity.detected,
       requiredTitlePhrase: facet?.name === "biographical-event" ? entity.text : "",
@@ -593,10 +637,18 @@ export function buildReligiousSearchPlan(query, manifest) {
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
-      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery].filter(Boolean),
-      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
-      evidenceRoles: [definitionEvidenceQuery ? "definition-detail" : "", importanceEvidenceQuery ? "importance-context" : ""].filter(Boolean),
-      evidenceQuerySubjects: [definitionEvidenceQuery ? [semanticHeadTerm] : [], importanceEvidenceQuery ? subjectTerms : []].filter((group) => group.length),
+      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery, biographicalEvidenceQuery].filter(Boolean),
+      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery, biographicalEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
+      evidenceRoles: [
+        definitionEvidenceQuery ? "definition-detail" : "",
+        importanceEvidenceQuery ? "importance-context" : "",
+        biographicalEvidenceQuery ? "event-detail" : "",
+      ].filter(Boolean),
+      evidenceQuerySubjects: [
+        definitionEvidenceQuery ? [semanticHeadTerm] : [],
+        importanceEvidenceQuery ? subjectTerms : [],
+        biographicalEvidenceQuery ? entity.searchAliases : [],
+      ].filter((group) => group.length),
       resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: 16,
       seedCount: 8,
@@ -618,7 +670,7 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery
+      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQuery
         ? 6
         : (facet?.secondaryPromotionLimit || 4),
     },
