@@ -7,12 +7,16 @@ import {
 } from "../src/lib/local-conversation.js";
 import { cleanCorpusDisplay, cleanCorpusMarkdown } from "../src/lib/corpus-display.js";
 import {
+  appendHadithOffer,
   biographicalEvidenceSynthesis,
+  contestedLineageMarriageEvidenceSynthesis,
+  conversationMessages,
   definitionEvidenceSynthesis,
   importanceEvidenceSynthesis,
   legalEvidenceSynthesis,
   lineageMarriageEvidenceSynthesis,
   methodEvidenceSynthesis,
+  overlappingMarriageEvidenceSynthesis,
   parseQueryAnalysisJson,
   reportedEvidenceSynthesis,
   synthesisMessages,
@@ -128,6 +132,7 @@ for (const query of [
 
 for (const query of [
   "picture of imam for mourning",
+  "depictions of the imam for mourning",
   "tasveer e imam azadari mein",
   "can a portrait or depiction be displayed",
 ]) {
@@ -137,6 +142,10 @@ for (const query of [
   assert.ok(
     depiction.results.slice(0, 4).some(({ link }) => link.includes("/6/7/65/6")),
     "a depiction query must include the direct picture-on-furnishings report",
+  );
+  assert.ok(
+    hasLink(depiction.results, "/6/7/28/4") && hasLink(depiction.results, "/6/7/28/7"),
+    "a display/use query must include both reported furnishing-use precedents",
   );
   assert.ok(
     depiction.results.slice(0, 5).every((result) => /picture|statue|portrait|form(?:s|ed)?/i.test(`${result.title} ${result.chapter} ${result.text}`)),
@@ -149,6 +158,77 @@ const depictionSynthesis = visualDepictionEvidenceSynthesis(
 assert.match(depictionSynthesis, /does not identify any portrait as an authentic likeness/i);
 assert.match(depictionSynthesis, /does not specifically describe.*mourning procession/i);
 assert.doesNotMatch(depictionSynthesis, /therefore.*(?:allowed|forbidden|haram)/i);
+assert.doesNotMatch(depictionSynthesis, /interfer(?:e|es|ing).*prayer|you should|I (?:think|believe)/i);
+
+const contestedMarriage = await routedSearch(
+  "Imam al Kadhim did not marry his daughters because there was no sayyid suitor",
+);
+assert.equal(contestedMarriage.route.retrievalProfile.facet, "contested-lineage-marriage");
+assert.equal(contestedMarriage.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  hasLink(contestedMarriage.results, "/11/2/5/1"),
+  "the claim must be tested against Imam al-Kazim's transmitted will",
+);
+assert.ok(
+  hasLink(contestedMarriage.results, "/9/3/105/4"),
+  "the response must include Imam al-Sadiq's daughter/Umayyad precedent",
+);
+assert.ok(
+  hasLink(contestedMarriage.results, "/5/3/22/1") || hasLink(contestedMarriage.results, "/5/3/22/2"),
+  "the response must retain the Miqdad and Duba'ah precedent",
+);
+const contestedSynthesis = contestedLineageMarriageEvidenceSynthesis(contestedMarriage.results);
+assert.match(contestedSynthesis, /claim.*not stated|claim.*not established/i);
+assert.match(contestedSynthesis, /Imam al-Rida|Ali Al-Ridha/i);
+assert.match(contestedSynthesis, /Umayyad/i);
+assert.match(contestedSynthesis, /Miqdad|Duba/i);
+assert.doesNotMatch(contestedSynthesis, /because (?:he was )?imprisoned|because of taqiyyah/i);
+
+for (const query of [
+  "if a woman in a mutah is married nikah what to do",
+  "woman already in muta then her family marries her to another husband",
+  "what if she is still in temporary marriage but a second nikah is done",
+]) {
+  const overlappingMarriage = await routedSearch(query);
+  assert.equal(overlappingMarriage.route.retrievalProfile.facet, "overlapping-marriage-contracts");
+  assert.equal(overlappingMarriage.route.retrievalProfile.needsQueryAnalysis, false);
+  assert.ok(
+    overlappingMarriage.results[0]?.link.includes("/5/3/111/6"),
+    `an overlapping marriage-contract question must lead with the matching case; got ${overlappingMarriage.results.map(({ link }) => link).join(", ")}`,
+  );
+  assert.ok(
+    hasLink(overlappingMarriage.results, "/5/3/105/5"),
+    "the evidence must include the reverse case of entering mut'ah while a husband remains",
+  );
+  assert.ok(
+    hasLink(overlappingMarriage.results, "/5/3/104/1"),
+    "the evidence must contrast a second marriage after the mut'ah term expires",
+  );
+}
+const overlappingMarriageAnswer = overlappingMarriageEvidenceSynthesis(
+  (await routedSearch("if a woman in a mutah is married nikah what to do")).results,
+);
+assert.match(overlappingMarriageAnswer, /without (?:the woman's|her) permission/i);
+assert.match(overlappingMarriageAnswer, /waiting period/i);
+assert.match(overlappingMarriageAnswer, /newly solemnized|all over again/i);
+assert.match(overlappingMarriageAnswer, /materially different case/i);
+
+const religiousFragment = resolveLocalConversation(
+  "Islam in contemporary visual culture and community traditions",
+  { messages: [] },
+  {},
+  manifest,
+);
+assert.equal(religiousFragment.intent, "local-llm");
+assert.equal(religiousFragment.offerHadith, true);
+assert.match(
+  conversationMessages("Islam in contemporary visual culture and community traditions", [], "english", {}, true)[0].content,
+  /do not supply a personal opinion|do not infer an answer/i,
+);
+assert.equal(
+  appendHadithOffer("That is a religious topic.", true),
+  "That is a religious topic.\n\nWould you like ahadith on the matter?",
+);
 
 const ridaMartyrdom = await routedSearch("Can you inform me about the event of the martyrdom of imam rida");
 assert.equal(ridaMartyrdom.route.retrievalProfile.facet, "biographical-event");

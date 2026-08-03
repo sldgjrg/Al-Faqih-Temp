@@ -117,6 +117,11 @@ const RELIGIOUS_SCRIPT_DOMAIN = /(?:الله|الإسلام|اسلام|الشي�
 
 const RELIGIOUS_FOLLOW_UP = /^(?:(?:no|nah|yes|yeah|okay|ok|please)\s+)*(?:now\s+)?(?:find|show|give|bring|search(?:\s+for)?|cite|source)\s+(?:(?:me|us)\s+)?(?:(?:the|those|some|any)\s+)?(?:hadith|ahadith|narration|narrations|riwaya|riwayat|reports?|sources?)(?:\s+(?:on|about|for|it|that|this|them))?[.!?]*$/i;
 
+// Practical questions are often written as fragments ("X happened what to
+// do") rather than grammatical permission questions.  Preserve that relation
+// so the retriever can prefer a report containing both the case and its remedy.
+const CASE_REMEDY_QUERY = /\b(?:what\s+(?:(?:am|are|is|was|were)\s+\S+\s+)?to\s+do|what\s+(?:should|must|can|could)\s+(?:i|we|he|she|they|the\s+\w+)\s+do|how\s+(?:should|must|can|could)\s+(?:i|we|he|she|they|the\s+\w+)\s+(?:proceed|respond|fix|resolve)|what\s+happens\s+(?:if|when)|solution|remedy)\b/i;
+
 function normalize(value) {
   return String(value || "")
     .normalize("NFKD")
@@ -195,7 +200,7 @@ const RETRIEVAL_FACETS = [
     // question. Search distinct rules and reported uses of pictures instead
     // of treating an Imam's appearance or generic mourning as picture proof.
     name: "visual-depiction",
-    pattern: /\b(?:pictures?|images?|portraits?|draw(?:ing|n|s)?|paint(?:ing|ed|s)?|depict(?:ion|ed|ing|s)?|represent(?:ation|ed|ing|s)?|likeness|statues?|photographs?|photos?|shabih|shabeeh|tasveer|tasvir)\b/i,
+    pattern: /\b(?:pictures?|images?|portraits?|draw(?:ing|n|s)?|paint(?:ing|ed|s)?|depict(?:ions?|ed|ing|s)?|represent(?:ations?|ed|ing|s)?|likeness(?:es)?|statues?|photographs?|photos?|shabih|shabeeh|tasveer|tasvir)\b/i,
     scriptPattern: /(?:صورة|صور|تصوير|تمثال|تماثيل|شبيه|تشبيه)/u,
     strict: false,
     terms: [
@@ -211,24 +216,44 @@ const RETRIEVAL_FACETS = [
         literalAnchors: ["picture", "pictures"],
       },
       {
+        role: "reported-use-context",
+        query: "Ali ibn Husayn picture decorated pillows furnishings sat on them",
+        subjects: ["picture decorated pillows", "picture furnishings"],
+        literalAnchors: ["sat"],
+      },
+      {
+        role: "reported-use-context",
+        query: "Abu Jafar man sit furnishing pictures do not consider important",
+        subjects: ["sit furnishing pictures"],
+        literalAnchors: ["sit"],
+      },
+      {
+        role: "sacred-person-image-context",
+        query: "green rock pictures all prophets Mosque Sahlah",
+        subjects: ["pictures all prophets"],
+        literalAnchors: ["prophets"],
+      },
+      {
         role: "making-context",
         query: "forms pictures statues blow spirit creator",
         subjects: ["forms pictures", "forms statues"],
         literalAnchors: ["picture", "pictures", "statue", "statues"],
+        operation: "making",
       },
       {
         role: "altered-image-context",
         query: "pictures statues house heads changed not harmful",
         subjects: ["pictures statues"],
         literalAnchors: ["picture", "pictures", "statue", "statues"],
+        operation: "making",
       },
     ],
-    resultLimit: 6,
+    resultLimit: 4,
     maxDirectResults: 4,
     maxFamilyMembers: 4,
     maxPerChapter: 4,
     minUniqueResults: 3,
-    maxUniqueResults: 7,
+    maxUniqueResults: 5,
     candidateLimit: 160,
     expandedLimit: 280,
     seedLimit: 10,
@@ -238,6 +263,60 @@ const RETRIEVAL_FACETS = [
     secondaryDirectRatio: 0.7,
     directFloorRatio: 0.38,
     relatedFloorRatio: 0.3,
+  },
+  {
+    // Treat a claim about an Imam's daughters as a historical assertion to
+    // test against transmitted evidence, not as permission for the model to
+    // improvise a motive. The evidence roles are reusable: the actor's own
+    // testament, a same-family precedent, and the general compatibility rule.
+    name: "contested-lineage-marriage",
+    pattern: /\b(?=.*(?:imam\s+(?:al[-\s]?)?(?:kadhim|kazim)|musa\s+(?:ibn|bin|b\.?)[-\s]+ja[’'`]?far|seventh\s+imam))(?=.*\bdaughters?\b)(?=.*\b(?:marry|married|marriage|unmarried|suitor|nikah|nikkah)\b).*/i,
+    scriptPattern: /(?=.*(?:موسى بن جعفر|الإمام الكاظم))(?=.*(?:بنت|بنات))(?=.*(?:زواج|تزوج|تتزَوج|لم تتزوج))/u,
+    strict: false,
+    terms: ["Musa ibn Jafar", "daughters", "marriage", "Ali al-Rida", "testament"],
+    deterministicEvidence: true,
+    allowCrossEntityEvidence: true,
+    evidenceQueries: [
+      {
+        role: "testament-evidence",
+        query: "Musa ibn Jafar will daughters Ali Rida counsel marry them off if he pleases",
+        subjects: ["Musa ibn Jafar daughters", "my daughters Ali Rida"],
+        literalAnchors: ["daughters"],
+      },
+      {
+        role: "ahlulbayt-precedent",
+        query: "Sadiq married daughter Umayyad Messenger example",
+        subjects: ["daughter Umayyad"],
+        literalAnchors: ["umayyad"],
+      },
+      {
+        role: "prophetic-precedent",
+        query: "Miqdad Dubaah daughter Zubayr marriage most pious",
+        subjects: ["Miqdad Dubaah"],
+        literalAnchors: ["miqdad"],
+      },
+      {
+        role: "compatibility-principle",
+        query: "Juwayabir daughter marriage Islam tribe genealogy pious",
+        subjects: ["Juwayabir daughter"],
+        literalAnchors: ["juwayabir", "juwaybir"],
+      },
+    ],
+    resultLimit: 6,
+    maxDirectResults: 5,
+    maxFamilyMembers: 4,
+    maxPerChapter: 4,
+    minUniqueResults: 3,
+    maxUniqueResults: 7,
+    candidateLimit: 220,
+    expandedLimit: 340,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.34,
+    relatedFloorRatio: 0.26,
   },
   {
     // Marriage compatibility is a relation between faith, lineage and social
@@ -299,6 +378,55 @@ const RETRIEVAL_FACETS = [
     secondaryDirectRatio: 0.72,
     directFloorRatio: 0.36,
     relatedFloorRatio: 0.28,
+  },
+  {
+    // A continuing temporary contract followed by a second marriage is an
+    // overlapping-contract question.  It is not answered by generic chapters
+    // about repeated mut'ah after expiry.  Search the active conflict, the
+    // reverse conflict, and the expired-contract contrast as separate roles.
+    name: "overlapping-marriage-contracts",
+    pattern: /^(?=.*\b(?:mutah|muta|mut['â€™Ê¿`]?ah|temporary\s+marriage)\b)(?=.*\b(?:nikah|nikkah|married|marries|marry|second\s+husband|another\s+husband)\b)(?=.*\b(?:while|during|already|still|ongoing|currently|family|without\s+(?:her\s+)?permission|in\s+(?:a\s+)?(?:mutah|muta|mut['â€™Ê¿`]?ah|temporary\s+marriage))\b).*$/i,
+    scriptPattern: /(?=.*(?:Ù…ØªØ¹Ø©|Ø§Ù„Ù…ØªØ¹Ø©))(?=.*(?:Ø²ÙˆØ§Ø¬|Ù†ÙƒØ§Ø­|Ø²ÙˆØ¬ÙˆÙ‡Ø§))(?=.*(?:ÙÙŠ|Ø£Ø«Ù†Ø§Ø¡|Ù…Ø§ Ø²Ø§Ù„|Ø¨ØºÙŠØ± Ø¥Ø°Ù†Ù‡Ø§|Ø£Ù‡Ù„Ù‡Ø§))/u,
+    strict: false,
+    terms: ["woman", "mutah", "temporary marriage", "marriage", "husband", "contract"],
+    deterministicEvidence: true,
+    caseRemedy: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "active-contract-conflict",
+        query: "woman mutah then family give her in marriage publicly without permission solution",
+        subjects: ["woman mutah marriage"],
+        literalAnchors: ["permission"],
+      },
+      {
+        role: "reverse-contract-conflict",
+        query: "woman has husband forms mutah learns husband living with her",
+        subjects: ["woman husband mutah"],
+        literalAnchors: ["mutah"],
+      },
+      {
+        role: "expired-contract-contrast",
+        query: "mutah appointed time expires then another man marries her first man",
+        subjects: ["mutah another man marries"],
+        literalAnchors: ["expires"],
+      },
+    ],
+    resultLimit: 3,
+    maxDirectResults: 4,
+    maxFamilyMembers: 3,
+    maxPerChapter: 3,
+    minUniqueResults: 3,
+    maxUniqueResults: 6,
+    candidateLimit: 220,
+    expandedLimit: 340,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 6,
+    secondaryDirectRatio: 0.68,
+    directFloorRatio: 0.4,
+    relatedFloorRatio: 0.3,
   },
   {
     name: "appearance",
@@ -492,7 +620,7 @@ const RETRIEVAL_FACETS = [
   },
   {
     name: "legal-practical",
-    pattern: /\b(?:allowed|permitted|permissible|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|(?:can|could|may|should|must)\s+(?!you\b)\S+|what\s+should\s+i\s+do)\b/i,
+    pattern: /\b(?:allowed|permitted|permissible|valid|invalid|obligatory|recommended|forbidden|haram|halal|najis|tahir|breaks?|invalidates?|ruling|(?:can|could|may|should|must)\s+(?!you\b)\S+|what\s+(?:(?:am|are|is|was|were)\s+\S+\s+)?to\s+do|what\s+(?:should|must|can|could)\s+(?:i|we|he|she|they|the\s+\w+)\s+do|how\s+(?:should|must|can|could)\s+(?:i|we|he|she|they|the\s+\w+)\s+(?:proceed|respond|fix|resolve)|what\s+happens\s+(?:if|when)|solution|remedy)\b/i,
     scriptPattern: /(?:يجوز|لا يجوز|واجب|مستحب|حرام|حلال|نجس|طاهر|حكم|کیا میں|جائز|ناجائز)/u,
     strict: false,
     terms: [],
@@ -564,7 +692,7 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueri
   const knownCorpusTerms = corpusTermCount(original, manifest);
   if (facet?.deterministicEvidence) return false;
   if (facet?.name === "time-definition") return false;
-  if (glossaryQueries.length || facet?.name === "biographical-event") return false;
+  if (facet?.name === "biographical-event") return false;
   if (facet?.name === "virtues" || facet?.name === "importance") return false;
   if (facet?.name === "reported-evidence") return false;
   if (facet?.name === "method") {
@@ -574,10 +702,14 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueri
     return wordCount > 8 && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
   }
   if (facet?.name === "legal-practical") {
+    // A corpus-anchored case/remedy fragment can stay on the fast path: the
+    // full-record scene scorer below compares its problem and resolution. A
+    // modern or unfamiliar act still receives semantic analysis.
+    if (CASE_REMEDY_QUERY.test(normalized) && knownCorpusTerms >= 2) return false;
     return knownCorpusTerms < 2
-      || wordCount > 5
       || /\b(?:can|could|may|should|must|another|someone|work|job|sell|buy|under|without|except|all|every|circumstances?)\b/i.test(normalized);
   }
+  if (glossaryQueries.length) return false;
   // Named concepts and transliterations are often absent as an exact phrase
   // even when their reports are present under descriptive wording.  Send
   // short, unfamiliar general corpus questions through the semantic planner
@@ -810,8 +942,13 @@ export function buildReligiousSearchPlan(query, manifest) {
   const reportedEvidenceQuery = reportedEvidence.queryTerms.length
     ? `${[...new Set([...reportedEvidence.queryTerms, ...subjectTerms])].join(" ")} asked instructed replied continued observed`
     : "";
+  const visualOperation = facet?.name === "visual-depiction"
+    && /\b(?:draw|drawing|paint|painting|make|making|create|creating|form|forming|produce|producing)\b/i.test(normalized)
+    ? "making"
+    : "display";
   const facetEvidenceQueries = Array.isArray(facet?.evidenceQueries)
-    ? facet.evidenceQueries.filter((entry) => entry?.query)
+    ? facet.evidenceQueries.filter((entry) => entry?.query
+      && (!entry.operation || entry.operation === visualOperation))
     : [];
   const timeSearchQuery = facet?.name === "time-definition"
     ? (() => {
@@ -833,6 +970,8 @@ export function buildReligiousSearchPlan(query, manifest) {
       && !ENGLISH_STOP_WORDS.has(term)
       && !methodIntentTerms.has(term))
     : [];
+  const caseRemedy = Boolean(facet?.caseRemedy)
+    || (facet?.name === "legal-practical" && CASE_REMEDY_QUERY.test(normalized));
 
   return {
     searchQuery: expansionParts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim(),
@@ -840,8 +979,13 @@ export function buildReligiousSearchPlan(query, manifest) {
     retrievalProfile: {
       version: 3,
       facet: facet?.name || "general",
+      caseRemedy,
+      onePerEvidenceRole: Boolean(facet?.onePerEvidenceRole),
       needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries),
-      semanticGlossExpansion: glossaryQueries.length > 0,
+      // Deterministic evidence lanes already use corpus-native vocabulary.
+      // Do not make every word of those lanes mandatory merely because the
+      // user's main query contained one Roman-Arabic gloss such as nikah.
+      semanticGlossExpansion: glossaryQueries.length > 0 && !facet?.deterministicEvidence,
       expandMethodContext,
       methodSubjectTerms,
       strictFacet: Boolean(facet?.strict),
@@ -851,7 +995,8 @@ export function buildReligiousSearchPlan(query, manifest) {
         ...subjectTerms,
       ],
       entityTerms: entity.terms,
-      requireEntityMatch: entity.detected && facet?.name !== "visual-depiction",
+      requireEntityMatch: entity.detected && !facet?.allowCrossEntityEvidence
+        && facet?.name !== "visual-depiction",
       requiredTitlePhrase: facet?.name === "biographical-event" ? entity.text : "",
       minimumTitleEntityCoverage: 0.66,
       // General questions should not be rejected merely because an English
@@ -1106,6 +1251,8 @@ export function resolveLocalConversation(query, conversation, globalMemory, mani
   return {
     intent: "local-llm",
     language,
+    offerHadith: RELIGIOUS_DOMAIN.test(normalize(contextualQuery))
+      || RELIGIOUS_SCRIPT_DOMAIN.test(contextualQuery),
     memoryUpdate,
   };
 }

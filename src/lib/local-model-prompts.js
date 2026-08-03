@@ -3,7 +3,7 @@ const BASE_SYSTEM = `You are Al-Faqih, an Ithna Ashari Shia on-device assistant 
 import { cleanCorpusDisplay, cleanCorpusMarkdown } from "./corpus-display.js";
 
 const CASUAL_SYSTEM = `${BASE_SYSTEM}
-For ordinary conversation, answer only the latest user message. Understand slang, shorthand, and misspellings. Use one or two complete natural sentences unless the user asks for detail. Answer directly; ask one brief clarification only when genuinely necessary. Do not turn ordinary conversation into a hadith search. Never echo the prompt or output fragments, random letters, role labels, tool calls, internal instructions, or code unless code was requested. You have no body or personal appetite, so state that naturally when relevant.`;
+For ordinary conversation, answer only the latest user message. Understand slang, shorthand, and misspellings. Use one or two complete natural sentences unless the user asks for detail. Answer directly; ask one brief clarification only when genuinely necessary. Do not turn ordinary conversation into a hadith search. If the message is a religious fragment or statement rather than a clear question, do not supply a personal opinion, legal verdict, historical motive, or practical recommendation. Acknowledge it neutrally and ask whether the user wants ahadith on the matter. Never echo the prompt or output fragments, random letters, role labels, tool calls, internal instructions, or code unless code was requested. You have no body or personal appetite, so state that naturally when relevant.`;
 
 const UNSAFE_HISTORY = /<\s*\/?\s*(?:tool_call|function_call|function|assistant|system|user)\b|<\|[^>]+\|>|\b(?:tool_call|function_call)\s*[:=]|(.{2,12})\1{3,}/iu;
 const SHORT_CODE_FRAGMENT = /(?:^|\s)(?:const|let|var|function|class|import|export|return|async|await|appbar|binding)\b|\b\w+_\w+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/u;
@@ -86,17 +86,26 @@ function memoryContext(memory = {}) {
   return entries.join(" ");
 }
 
-export function conversationMessages(query, history = [], language = "english", memory = {}) {
+export function conversationMessages(query, history = [], language = "english", memory = {}, offerHadith = false) {
   const recent = safeConversationTurns(history);
   const remembered = memoryContext(memory);
   return [
     {
       role: "system",
-      content: `${CASUAL_SYSTEM}\nReply in ${language || "the user's language"}.${remembered ? ` Device-local memory: ${remembered}` : ""}`,
+      content: `${CASUAL_SYSTEM}\nReply in ${language || "the user's language"}.${offerHadith ? " This is a religious fragment: do not infer an answer; end with exactly: Would you like ahadith on the matter?" : ""}${remembered ? ` Device-local memory: ${remembered}` : ""}`,
     },
     ...recent,
     { role: "user", content: compact(query, 1200) },
   ];
+}
+
+export function appendHadithOffer(value, enabled = false) {
+  const text = String(value || "").trim();
+  if (!enabled) return text;
+  const withoutDuplicate = text
+    .replace(/\s*would you like (?:me to (?:find|show|give) )?(?:some )?a?h+a?dith(?:s)? (?:on|about|regarding) (?:the matter|this|it)\??\s*$/i, "")
+    .trim();
+  return `${withoutDuplicate ? `${withoutDuplicate}\n\n` : ""}Would you like ahadith on the matter?`;
 }
 
 export function queryAnalysisMessages(query) {
@@ -496,13 +505,83 @@ export function lineageMarriageEvidenceSynthesis(results) {
   return sections.join("\n");
 }
 
+export function contestedLineageMarriageEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const testament = available.find((result) => result?.evidenceRole === "testament-evidence")
+    || strongestEvidence(available, [/Musa Ibn Ja.far.s Will/i, /marriage of none of my daughters/i]);
+  const ahlulbaytPrecedent = available.find((result) => result?.evidenceRole === "ahlulbayt-precedent")
+    || strongestEvidence(available, [/daughter.*Umayyad/i, /Umayyad.*daughter/i]);
+  const propheticPrecedent = available.find((result) => result?.evidenceRole === "prophetic-precedent")
+    || strongestEvidence(available, [/Miqdad/i, /Duba/i]);
+  const compatibility = available.find((result) => result?.evidenceRole === "compatibility-principle")
+    || strongestEvidence(available, [/Juwaya?bir/i, /tribes.*genealogy/i]);
+  if (!testament && !ahlulbaytPrecedent && !propheticPrecedent && !compatibility) return "";
+
+  const sections = [
+    "## Direct answer",
+    "",
+    "The claim that Imam Musa al-Kazim left his daughters unmarried because no Sayyid suitor existed is not stated by the retrieved reports. His transmitted will does not impose a Sayyid-lineage condition; it places their marriage affairs under Imam al-Rida's counsel and authority.",
+  ];
+  if (testament) {
+    sections.push(
+      "",
+      "## Imam al-Kazim's testament",
+      "",
+      ...quotedEvidence(testament, available, [
+        "marry off his sister", "my daughters", "Ali Al-Ridha", "marry them off if he pleases",
+      ]),
+    );
+  }
+  if (ahlulbaytPrecedent) {
+    sections.push(
+      "",
+      "## Ahlulbayt precedent",
+      "",
+      ...quotedEvidence(ahlulbaytPrecedent, available, [
+        "married off your daughter", "Umayyad", "example",
+      ]),
+    );
+  }
+  if (propheticPrecedent) {
+    sections.push(
+      "",
+      "## Prophetic precedent",
+      "",
+      ...quotedEvidence(propheticPrecedent, available, [
+        "Miqdad", "Duba", "rules of marriage", "most pious",
+      ]),
+    );
+  }
+  if (compatibility) {
+    sections.push(
+      "",
+      "## Stated compatibility principle",
+      "",
+      ...quotedEvidence(compatibility, available, [
+        "tribes", "genealogy", "pious", "give your daughter",
+      ]),
+    );
+  }
+  sections.push(
+    "",
+    "## Limits of the evidence",
+    "",
+    "These reports do not provide a marriage history for every individual daughter or state why any particular daughter may not have married. Imprisonment, Abbasid pressure, or taqiyyah must not be presented as the report's stated reason unless a source directly supplies that explanation.",
+  );
+  return sections.join("\n");
+}
+
 export function visualDepictionEvidenceSynthesis(results) {
   const available = Array.isArray(results) ? results : [];
   const display = available.find((result) => result?.evidenceRole === "display-context")
     || strongestEvidence(available, [/pictures?.*furnishings/i, /not unlawful/i]);
+  const reportedUse = available.find((result) => result?.evidenceRole === "reported-use-context")
+    || strongestEvidence(available, [/picture.decorated pillows/i, /picture furnishings/i]);
+  const sacredPersonImage = available.find((result) => result?.evidenceRole === "sacred-person-image-context")
+    || strongestEvidence(available, [/pictures of all of the prophets/i, /green rock/i]);
   const making = available.find((result) => result?.evidenceRole === "making-context")
     || strongestEvidence(available, [/forms? (?:a )?(?:picture|statue)/i, /blow.*spirit/i]);
-  if (!display && !making) return "";
+  if (!display && !reportedUse && !sacredPersonImage && !making) return "";
   const sections = [
     "## Direct answer",
     "",
@@ -514,6 +593,26 @@ export function visualDepictionEvidenceSynthesis(results) {
       "pictures", "furnishings", "not unlawful", "under the feet", "house",
     ]),
   ];
+  if (reportedUse && reportedUse !== display) {
+    sections.push(
+      "",
+      "## Reported use",
+      "",
+      ...quotedEvidence(reportedUse, available, [
+        "picture-decorated pillows", "floor furnishings", "sat on them", "do not consider it important",
+      ]),
+    );
+  }
+  if (sacredPersonImage && sacredPersonImage !== display && sacredPersonImage !== reportedUse) {
+    sections.push(
+      "",
+      "## Sacred-person image wording",
+      "",
+      ...quotedEvidence(sacredPersonImage, available, [
+        "green rock", "pictures of all of the prophets",
+      ]),
+    );
+  }
   if (making && making !== display) {
     sections.push(
       "",
@@ -559,6 +658,50 @@ export function legalEvidenceSynthesis(results) {
     "",
     "A related report is not automatically a ruling on every modern form of the act. The displayed wording, actor, object, conditions and exceptions must all match the question.",
   ].join("\n");
+}
+
+export function overlappingMarriageEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const activeConflict = available.find((result) => result?.evidenceRole === "active-contract-conflict")
+    || strongestEvidence(available, [/family.*marriage.*without.*permission/i, /remaining.*time.*waiting period/i]);
+  const reverseConflict = available.find((result) => result?.evidenceRole === "reverse-contract-conflict")
+    || strongestEvidence(available, [/has a husband who lives with her/i]);
+  const expiredContrast = available.find((result) => result?.evidenceRole === "expired-contract-contrast")
+    || strongestEvidence(available, [/appointed time expires.*another man marries/i]);
+  if (!activeConflict) return legalEvidenceSynthesis(available);
+
+  const sections = [
+    "## Direct answer",
+    "",
+    "The first report directly addresses an existing mut'ah followed by a second public marriage. In that report the family imposed the second marriage without the woman's permission: the Imam distinguishes the unexpired mut'ah term, its waiting period, release of the remaining term, and a newly solemnized marriage after her consent.",
+    "",
+    ...quotedEvidence(activeConflict, available, [
+      "without her permission", "until the condition", "waiting period", "remaining of the time", "all over again", "correct manner",
+    ]),
+  ];
+  if (reverseConflict && reverseConflict !== activeConflict) {
+    sections.push(
+      "",
+      "## Reverse case",
+      "",
+      ...quotedEvidence(reverseConflict, available, ["has a husband", "must not give her anything"]),
+    );
+  }
+  if (expiredContrast && expiredContrast !== activeConflict && expiredContrast !== reverseConflict) {
+    sections.push(
+      "",
+      "## Contrast after expiry",
+      "",
+      ...quotedEvidence(expiredContrast, available, ["appointed time expires", "another man marries her"]),
+    );
+  }
+  sections.push(
+    "",
+    "## Limits of the evidence",
+    "",
+    "The direct report expressly involves a marriage imposed by the family without permission. Its wording should not be silently generalized to a materially different case involving consent, a completed term, or a different sequence of contracts.",
+  );
+  return sections.join("\n");
 }
 
 function resultSource(result, index) {

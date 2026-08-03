@@ -519,6 +519,7 @@ const AUTHORS = [
   [/nahj al-balagha/i, "Al-Sharif al-Radi"],
   [/kitab al-irshad/i, "Shaykh al-Mufid"],
   [/al-khisal/i, "Shaykh al-Saduq"],
+  [/mu.jam al-a.adith al-mu.tabara/i, "Shaykh Asif al-Mohseni"],
 ];
 
 const IMAMS = [

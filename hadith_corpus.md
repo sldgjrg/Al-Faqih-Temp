@@ -221046,3 +221046,15 @@ In the name of Allah, the [Most] Beneficent, the [Most] Merciful, All praise be 
 [Link](https://thaqalayn.net/hadith/12/1/39/13)
 
 ---
+
+### Muʿjam al-Aḥādīth al-Muʿtabara - Volume 1: Muʿalla b. Khunays (citing Rijal al-Kashshi 4/264)
+
+Relevant excerpt from the longer report:
+
+قَالَ دَاوُدُ: وَأَنْتَ قَدْ أَتَيْتَ ذَنْباً لاَ يَغْفِرُهُ اللهُ لَكَ. قَالَ: وَمَا ذَاكَ الذَّنْبُ؟ قَالَ: زَوَّجْتَ ابْنَتَكَ فُلاَناً الأُمَوِيَّ. قَالَ: إِنْ كُنْتُ زَوَّجْتُ فُلاَناً الأُمَوِيَّ فَقَدْ زَوَّجَ رَسُولُ اللهِ صَلَّى اللهُ عَلَيْهِ وَآلِهِ عُثْمَانَ، وَلِي بِرَسُولِ اللهِ أُسْوَةٌ.
+
+Dawud said to Imam al-Sadiq, “You married your daughter to so-and-so, the Umayyad.” The Imam replied, “If I married her to so-and-so, the Umayyad, then the Messenger of Allah gave [a daughter] in marriage to Uthman, and in the Messenger of Allah I have an example.”
+
+[Link](https://thaqalayn.net/hadith/9/3/105/4)
+
+---

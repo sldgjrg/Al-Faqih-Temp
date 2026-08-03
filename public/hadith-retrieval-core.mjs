@@ -1760,7 +1760,7 @@ export function rerankLoadedRecords({
       // cheap evidence-window check fails, keeping ordinary searches fast.
       if (
         !subjectEvidence.matched
-        && plan.retrievalProfile?.facet === "reported-evidence"
+        && (plan.retrievalProfile?.facet === "reported-evidence" || plan.retrievalProfile?.caseRemedy)
         && plan.retrievalProfile?.allowFullRecordSubjectMatch !== false
         && plan.subjectSourceGroups.length
       ) {
@@ -1885,14 +1885,45 @@ export function rerankLoadedRecords({
         && familyScore >= 0.45
         && reportedScenePriority >= 3;
       const reportedFamilySubjectBoost = reportedFamilySubject ? 0.16 : 0;
+      // A practical case asks for the resolution of a concrete state, not for
+      // any report sharing its broad legal topic. Prefer a complete narrative
+      // that states a problem, moves through a condition or transition, and
+      // supplies an operative remedy/outcome. This is deliberately topic- and
+      // narration-agnostic; subject matching still comes from the user's query.
+      const normalizedPracticalCase = plan.retrievalProfile?.caseRemedy
+        ? normalizeText(`${title} ${chapter} ${text}`)
+        : "";
+      const practicalProblem = normalizedPracticalCase
+        ? /\b(?:asked|case of|what (?:must|should|can|could) (?:he|she|they|one) do|what (?:he|she|they) must do|solution|how (?:he|she|they|one) should)\b/.test(normalizedPracticalCase)
+        : false;
+      const practicalTransition = normalizedPracticalCase
+        ? /\b(?:then|thereafter|until|before|after|first|second|another|remaining|expires?|is over|waiting period|without (?:his|her|their) permission)\b/.test(normalizedPracticalCase)
+        : false;
+      const practicalRemedy = normalizedPracticalCase
+        ? /\b(?:must|should|can|may|cannot|must not|give up|renew|again|correct manner|valid|invalid|permissible|not permissible)\b/.test(normalizedPracticalCase)
+        : false;
+      const practicalOutcome = normalizedPracticalCase
+        ? /\b(?:so that|therefore|when .* (?:complete|over|expire)|once .* (?:complete|over|expire)|now .* (?:do|agrees?|renew)|all over again|correct manner)\b/.test(normalizedPracticalCase)
+        : false;
+      const practicalCaseStages = Number(practicalProblem)
+        + Number(practicalTransition)
+        + Number(practicalRemedy)
+        + Number(practicalOutcome);
+      const practicalCaseBoost = normalizedPracticalCase
+        && practicalProblem && practicalTransition && practicalRemedy && practicalOutcome
+        ? Math.min(0.46, 0.12 + practicalCaseStages * 0.075 + Math.min(0.04, subjectCoverage * 0.04))
+        : normalizedPracticalCase && practicalProblem && practicalTransition && practicalRemedy
+          ? 0.08
+          : 0;
       const rawScore = directScore + relationBoost + focusBoost + facetBoost + focusFacetTitleBoost
-        + reportedSceneBoost + reportedFamilySubjectBoost;
+        + reportedSceneBoost + reportedFamilySubjectBoost + practicalCaseBoost;
       const strategies = [];
       if (evidence.matchedLiteral) strategies.push("literal");
       if (evidence.phraseEvidence > 0.05) strategies.push("phrase");
       if (evidence.crossLanguage) strategies.push("cross-language");
       if (titleEvidence.coverage > 0.1) strategies.push("heading");
       if (reportedSceneBoost >= 0.14) strategies.push("answer-scene");
+      if (practicalCaseBoost >= 0.25) strategies.push("case-remedy");
       if (relationScore >= 0.22) strategies.push("parallel-report");
       if (candidate.familyRoot !== undefined && candidate.familyRoot !== null) strategies.push("report-family");
       if (facetMatched && plan.retrievalProfile?.facet && plan.retrievalProfile.facet !== "general") {

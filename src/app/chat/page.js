@@ -26,13 +26,16 @@ import {
   updateConversationMemory,
 } from "@/lib/local-conversation";
 import {
+  appendHadithOffer,
   biographicalEvidenceSynthesis,
   conversationMessages,
+  contestedLineageMarriageEvidenceSynthesis,
   definitionEvidenceSynthesis,
   elucidationMessages,
   methodEvidenceSynthesis,
   importanceEvidenceSynthesis,
   legalEvidenceSynthesis,
+  overlappingMarriageEvidenceSynthesis,
   lineageMarriageEvidenceSynthesis,
   parseElucidationJson,
   parseQueryAnalysisJson,
@@ -841,7 +844,7 @@ export default function LocalHadithChat() {
       };
     }
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=31", {
+      chatWorker = new Worker("/local-llm.worker.js?v=32", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -898,7 +901,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=31", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=33", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -1002,11 +1005,18 @@ export default function LocalHadithChat() {
         const lineageMarriageSynthesis = data.results.length && pending?.retrievalProfile?.facet === "lineage-marriage"
           ? lineageMarriageEvidenceSynthesis(synthesisEvidence)
           : "";
+        const contestedLineageMarriageSynthesis = data.results.length && pending?.retrievalProfile?.facet === "contested-lineage-marriage"
+          ? contestedLineageMarriageEvidenceSynthesis(synthesisEvidence)
+          : "";
         const visualDepictionSynthesis = data.results.length && pending?.retrievalProfile?.facet === "visual-depiction"
           ? visualDepictionEvidenceSynthesis(synthesisEvidence)
           : "";
         const legalSynthesis = data.results.length && pending?.retrievalProfile?.facet === "legal-practical"
           ? legalEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const overlappingMarriageSynthesis = data.results.length
+          && pending?.retrievalProfile?.facet === "overlapping-marriage-contracts"
+          ? overlappingMarriageEvidenceSynthesis(synthesisEvidence)
           : "";
         const sourceSynthesis = methodSynthesis
           || timeSynthesis
@@ -1015,8 +1025,10 @@ export default function LocalHadithChat() {
           || virtueSynthesis
           || importanceSynthesis
           || reportedSynthesis
+          || contestedLineageMarriageSynthesis
           || lineageMarriageSynthesis
           || visualDepictionSynthesis
+          || overlappingMarriageSynthesis
           || legalSynthesis;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
@@ -1339,7 +1351,7 @@ export default function LocalHadithChat() {
           }))
           .filter((message) => message.content);
         const generation = await requestLocalGeneration(
-          conversationMessages(query, history, localResponse.language, globalMemory),
+          conversationMessages(query, history, localResponse.language, globalMemory, localResponse.offerHadith),
           {
             mode: "conversation",
             ...conversationGenerationOptions(query),
@@ -1355,7 +1367,7 @@ export default function LocalHadithChat() {
                       conversation: {
                         intent: "local-llm",
                         language: localResponse.language,
-                        text: generation.text,
+                        text: appendHadithOffer(generation.text, localResponse.offerHadith),
                         source: "local-model",
                         modelLabel: generation.modelLabel,
                         device: generation.device,
@@ -1376,7 +1388,9 @@ export default function LocalHadithChat() {
                         conversation: {
                           intent: "mobile-safe",
                           language: localResponse.language,
-                          text: "Mobile-safe mode keeps the large WebGPU model off to prevent the browser tab from crashing. The local hadith search remains fully available for religious questions.",
+                          text: localResponse.offerHadith
+                            ? "I do not want to infer a religious ruling or historical conclusion from that fragment. Would you like ahadith on the matter?"
+                            : "Mobile-safe mode keeps the large WebGPU model off to prevent the browser tab from crashing. The local hadith search remains fully available for religious questions.",
                           source: "mobile-safe",
                         },
                       }

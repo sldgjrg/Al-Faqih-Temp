@@ -381,7 +381,7 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       }
     }
     const seenSupplemental = new Set();
-    const promotedSupplemental = supplementalResults.filter((result) => {
+    let promotedSupplemental = supplementalResults.filter((result) => {
       const key = result.link || result.id;
       if (seenSupplemental.has(key)) return false;
       seenSupplemental.add(key);
@@ -390,6 +390,11 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? 10 : 6,
       Number(retrievalProfile?.secondaryPromotionLimit) || 3,
     )));
+    if (retrievalProfile?.onePerEvidenceRole) {
+      promotedSupplemental = dynamicEvidenceRoles
+        .map((role) => promotedSupplemental.find((result) => result.evidenceRole === role))
+        .filter(Boolean);
+    }
     const promotedKeys = new Set(promotedSupplemental.map((result) => result.link || result.id));
     results = [
       ...promotedSupplemental,
