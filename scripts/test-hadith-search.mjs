@@ -148,6 +148,28 @@ function neighbouringMethodCandidates(seedResults, candidates) {
   return related.slice(0, 48);
 }
 
+function sameChapterCandidates(seedResults, candidates) {
+  const existing = new Set(candidates.map((candidate) => candidate.id));
+  const topScore = candidates[0]?.candidateScore || 1;
+  const related = [];
+  for (const seed of seedResults.slice(0, 3)) {
+    const location = parseCorpusChapter(seed.link);
+    const chapters = location && chapterDocuments.get(location.volumeKey);
+    if (!chapters) continue;
+    for (const id of chapters.get(location.chapter) || []) {
+      if (existing.has(id)) continue;
+      existing.add(id);
+      related.push({
+        id, passageId: -1, passageScore: 0, supportingPassageScore: 0, phraseMatches: 0, crossLanguageMatches: 0,
+        candidateScore: topScore * 0.9,
+        relationScore: 0.84,
+        relationTo: seed.id, familyRoot: seed.id, familyDepth: 1, familyScore: 0.84,
+      });
+    }
+  }
+  return related.slice(0, 48);
+}
+
 async function loadShard(shard) {
   if (!loadedShards.has(shard)) {
     const filename = `${String(shard).padStart(3, "0")}.json`;
@@ -193,9 +215,12 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     && retrievalProfile?.expandMethodContext
     ? neighbouringMethodCandidates(seeds, candidates)
     : [];
+  const timeChapterCandidates = retrievalProfile?.facet === "time-definition"
+    ? sameChapterCandidates(seeds, candidates)
+    : [];
   const expandedCandidates = expandRelatedCandidates({
     manifest,
-    candidates: [...candidates, ...methodNeighbours],
+    candidates: [...candidates, ...methodNeighbours, ...timeChapterCandidates],
     seedResults: seeds,
     filters,
     limit: 320,
@@ -251,7 +276,8 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     const supplementalBuckets = [];
     const dynamicEvidenceRoles = [...(retrievalProfile?.evidenceRoles || [])];
     const dynamicSubjectGroups = [...(retrievalProfile?.evidenceQuerySubjects || [])];
-    const dynamicLiteralAnchors = Array.from({ length: plannedSecondaryCount }, () => []);
+    const dynamicLiteralAnchors = [...(retrievalProfile?.evidenceQueryLiteralAnchors || [])];
+    while (dynamicLiteralAnchors.length < plannedSecondaryCount) dynamicLiteralAnchors.push([]);
     for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
       const secondaryQuery = secondaryQueries[queryIndex];
       const evidenceRole = dynamicEvidenceRoles[queryIndex] || "supporting";
@@ -269,8 +295,8 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
                 ...secondaryQuery.split(/\s+/).filter(Boolean),
               ]
             : secondaryQuery.split(/\s+/).filter(Boolean),
-        requireSubjectMatch: isTimingEvidence ? false : true,
-        subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
+        requireSubjectMatch: isTimingEvidence ? requiredSubjects.length > 0 : true,
+        subjectTermGroups: requiredSubjects.length ? requiredSubjects : (isTimingEvidence ? [] : [secondaryQuery]),
         minimumSubjectCoverage: isReportedEvidence || retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         allowFullRecordSubjectMatch: !isReportedEvidence || queryIndex < plannedSecondaryCount,
         requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? false : true,

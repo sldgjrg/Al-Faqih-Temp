@@ -433,6 +433,37 @@ function neighbouringMethodCandidates(seedResults, candidates) {
   return related.slice(0, 48);
 }
 
+function sameChapterCandidates(seedResults, candidates) {
+  if (!chapterDocuments || !seedResults.length) return [];
+  const existing = new Set(candidates.map((candidate) => candidate.id));
+  const topScore = candidates[0]?.candidateScore || 1;
+  const related = [];
+  for (const seed of seedResults.slice(0, 3)) {
+    const location = parseCorpusChapter(seed.link);
+    const chapters = location && chapterDocuments.get(location.volumeKey);
+    if (!chapters) continue;
+    for (const id of chapters.get(location.chapter) || []) {
+      if (existing.has(id)) continue;
+      existing.add(id);
+      related.push({
+        id,
+        passageId: -1,
+        passageScore: 0,
+        supportingPassageScore: 0,
+        phraseMatches: 0,
+        crossLanguageMatches: 0,
+        candidateScore: topScore * 0.9,
+        relationScore: 0.84,
+        relationTo: seed.id,
+        familyRoot: seed.id,
+        familyDepth: 1,
+        familyScore: 0.84,
+      });
+    }
+  }
+  return related.slice(0, 48);
+}
+
 function openDatabase() {
   if (databasePromise) return databasePromise;
   databasePromise = new Promise((resolve, reject) => {
@@ -719,9 +750,12 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     && retrievalProfile?.expandMethodContext
     ? neighbouringMethodCandidates(seedResults, candidates)
     : [];
+  const timeChapterCandidates = retrievalProfile?.facet === "time-definition"
+    ? sameChapterCandidates(seedResults, candidates)
+    : [];
   const expandedCandidates = expandRelatedCandidates({
     manifest,
-    candidates: [...candidates, ...methodNeighbours],
+    candidates: [...candidates, ...methodNeighbours, ...timeChapterCandidates],
     seedResults,
     filters: parsed.filters,
     limit: Math.max(240, Math.min(640, Number(retrievalProfile?.expandedLimit) || 420)),
@@ -781,7 +815,8 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     const supplementalBuckets = [];
     const dynamicEvidenceRoles = [...(retrievalProfile?.evidenceRoles || [])];
     const dynamicSubjectGroups = [...(retrievalProfile?.evidenceQuerySubjects || [])];
-    const dynamicLiteralAnchors = Array.from({ length: plannedSecondaryCount }, () => []);
+    const dynamicLiteralAnchors = [...(retrievalProfile?.evidenceQueryLiteralAnchors || [])];
+    while (dynamicLiteralAnchors.length < plannedSecondaryCount) dynamicLiteralAnchors.push([]);
     const isTimingEvidence = retrievalProfile?.facet === "time-definition";
     const isBiographicalEvidence = retrievalProfile?.facet === "biographical-event";
     const isReportedEvidence = retrievalProfile?.facet === "reported-evidence";
@@ -807,8 +842,8 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         // Timing reports often state the observable sign without repeating
         // the prayer's English name (for example, a white horizontal dawn
         // description). The timing query itself remains the focus gate.
-        requireSubjectMatch: isTimingEvidence ? false : true,
-        subjectTermGroups: isTimingEvidence ? [] : (requiredSubjects.length ? requiredSubjects : [secondaryQuery]),
+        requireSubjectMatch: isTimingEvidence ? requiredSubjects.length > 0 : true,
+        subjectTermGroups: requiredSubjects.length ? requiredSubjects : (isTimingEvidence ? [] : [secondaryQuery]),
         minimumSubjectCoverage: isReportedEvidence || retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         allowFullRecordSubjectMatch: !isReportedEvidence || queryIndex < plannedSecondaryCount,
         requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? false : true,

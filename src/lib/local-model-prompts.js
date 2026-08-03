@@ -448,6 +448,119 @@ export function reportedEvidenceSynthesis(results) {
   ].join("\n");
 }
 
+function quotedEvidence(result, results, evidenceTerms = []) {
+  if (!result) return [];
+  const number = Math.max(1, results.indexOf(result) + 1);
+  return [
+    `Report ${number}, ${result.collection}, “${result.chapter || result.title}”:`,
+    "",
+    publishedTranslation(result.text, evidenceTerms)
+      .split(/\n+/)
+      .map((line) => `> ${line}`)
+      .join("\n>"),
+  ];
+}
+
+export function lineageMarriageEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const compatibility = available.find((result) => result?.evidenceRole === "faith-compatibility")
+    || strongestEvidence(available, [/believers? are good match/i, /give your daughter/i]);
+  const propheticPrecedent = available.find((result) => result?.evidenceRole === "prophetic-precedent")
+    || strongestEvidence(available, [/Miqdad/i, /Duba/i]);
+  if (!compatibility && !propheticPrecedent) return "";
+  const sections = [
+    "## Direct answer",
+    "",
+    "The retrieved al-Kafi reports directly address marriage compatibility across inherited social or lineage distinctions. Their stated measures are Islam, belief and piety, and they preserve marriages arranged to demonstrate that principle.",
+    "",
+    ...quotedEvidence(compatibility, available, [
+      "from Adam", "tribes", "genealogy", "pious", "give your daughter", "good match",
+    ]),
+  ];
+  if (propheticPrecedent && propheticPrecedent !== compatibility) {
+    sections.push(
+      "",
+      "## Prophetic precedent",
+      "",
+      ...quotedEvidence(propheticPrecedent, available, [
+        "Miqdad", "Duba", "rules of marriage", "most pious",
+      ]),
+    );
+  }
+  sections.push(
+    "",
+    "## Limits of the evidence",
+    "",
+    "This reports the transmitted compatibility principles and precedents in the displayed narrations. It does not add a chain grade or decide an impediment that those reports do not mention.",
+  );
+  return sections.join("\n");
+}
+
+export function visualDepictionEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const display = available.find((result) => result?.evidenceRole === "display-context")
+    || strongestEvidence(available, [/pictures?.*furnishings/i, /not unlawful/i]);
+  const making = available.find((result) => result?.evidenceRole === "making-context")
+    || strongestEvidence(available, [/forms? (?:a )?(?:picture|statue)/i, /blow.*spirit/i]);
+  if (!display && !making) return "";
+  const sections = [
+    "## Direct answer",
+    "",
+    "The displayed corpus evidence concerns pictures and statues generally. It does not identify any portrait as an authentic likeness of an Imam, and it does not specifically describe using a sacred-person depiction or reenactment in a mourning procession.",
+    "",
+    "## General picture evidence",
+    "",
+    ...quotedEvidence(display, available, [
+      "pictures", "furnishings", "not unlawful", "under the feet", "house",
+    ]),
+  ];
+  if (making && making !== display) {
+    sections.push(
+      "",
+      ...quotedEvidence(making, available, [
+        "forms", "picture", "statue", "blow the spirit", "creator",
+      ]),
+    );
+  }
+  sections.push(
+    "",
+    "## Limits of the evidence",
+    "",
+    "None of the displayed narrations establishes that a modern image captures an Imam's actual appearance, or specifically rules on shabih and Karbala reenactment. Generic mourning reports cannot fill that evidentiary gap.",
+  );
+  return sections.join("\n");
+}
+
+export function legalEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  if (!available.length) return "";
+  const distinctRoles = [];
+  const seenRoles = new Set();
+  for (const result of available) {
+    const role = result?.evidenceRole || "direct";
+    if (seenRoles.has(role)) continue;
+    seenRoles.add(role);
+    distinctRoles.push(result);
+    if (distinctRoles.length >= 3) break;
+  }
+  return [
+    "## Direct answer",
+    "",
+    "The displayed narrations are the closest retrieved evidence. Their exact wording is reproduced below; no broader yes-or-no ruling has been added beyond what they state.",
+    "",
+    "## Evidence",
+    "",
+    ...distinctRoles.flatMap((result, index) => [
+      ...(index ? [""] : []),
+      ...quotedEvidence(result, available, result.evidenceTerms || []),
+    ]),
+    "",
+    "## Limits of the evidence",
+    "",
+    "A related report is not automatically a ruling on every modern form of the act. The displayed wording, actor, object, conditions and exceptions must all match the question.",
+  ].join("\n");
+}
+
 function resultSource(result, index) {
   return [
     `REPORT ${index + 1}`,

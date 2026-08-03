@@ -22,6 +22,8 @@ let webllmPromise;
 let enginePromise;
 let engine;
 let generationQueue = Promise.resolve();
+let activeRequestId = "";
+const cancelledRequestIds = new Set();
 
 function post(type, payload = {}) {
   self.postMessage({ type, ...payload });
@@ -29,6 +31,28 @@ function post(type, payload = {}) {
 
 function readableError(error) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function isGpuSessionError(error) {
+  return /(?:device\s*lost|gpu.*lost|initialize again|invalid external instance)/i.test(readableError(error));
+}
+
+function isGpuResourceError(error) {
+  return /(?:out of memory|memory pressure|storage buffer|gpu buffer|buffer.*(?:size|allocation|binding)|failed to (?:allocate|create).*buffer|allocation.*failed)/i.test(readableError(error));
+}
+
+async function releaseEngine() {
+  const knownEngine = engine;
+  engine = null;
+  enginePromise = null;
+  if (knownEngine?.unload) {
+    try {
+      await knownEngine.unload();
+    } catch {
+      // A lost WebGPU device can reject unload; clearing our references is
+      // still necessary so the next desktop request can create a new engine.
+    }
+  }
 }
 
 async function requireWebGPU() {
@@ -256,10 +280,12 @@ function generationOptions(data, messages, mode, repair = false) {
 }
 
 async function complete(localEngine, data, messages, mode, repair = false) {
+  if (cancelledRequestIds.has(data.requestId)) throw new Error("Generation cancelled.");
   const stream = await localEngine.chat.completions.create(generationOptions(data, messages, mode, repair));
   let text = "";
   let usage = null;
   for await (const chunk of stream) {
+    if (cancelledRequestIds.has(data.requestId)) throw new Error("Generation cancelled.");
     const delta = chunk?.choices?.[0]?.delta?.content || "";
     if (delta) {
       text += delta;
@@ -299,10 +325,16 @@ async function generate(data) {
   try {
     completion = await complete(localEngine, data, messages, mode, false);
   } catch (error) {
-    const message = readableError(error);
-    if (!/(device\s*lost|gpu.*lost|initialize again|invalid external instance)/i.test(message)) throw error;
-    engine = null;
-    enginePromise = null;
+    if (cancelledRequestIds.has(requestId)) throw error;
+    if (isGpuResourceError(error)) {
+      await releaseEngine();
+      throw new Error("The browser could not allocate a safe WebGPU buffer for this generation. The model session was released; hadith retrieval remains available.");
+    }
+    if (!isGpuSessionError(error)) throw error;
+    await releaseEngine();
+    if (preferSmallModel) {
+      throw new Error("The mobile WebGPU session was released. Hadith retrieval remains available without the language model.");
+    }
     post("model-status", {
       status: "loading",
       message: "The browser released the GPU session; restoring Qwen2.5 from local cache",
@@ -382,10 +414,30 @@ self.onmessage = ({ data }) => {
     ensureEngine().catch(() => {});
     return;
   }
+  if (data.type === "cancel") {
+    const requestId = String(data.requestId || "");
+    if (!requestId) return;
+    cancelledRequestIds.add(requestId);
+    if (activeRequestId === requestId && typeof engine?.interruptGenerate === "function") {
+      Promise.resolve(engine.interruptGenerate()).catch(() => {});
+    }
+    post("generation-cancelled", { requestId });
+    return;
+  }
   if (data.type === "generate") {
     generationQueue = generationQueue
-      .then(() => generate(data))
-      .catch((error) => {
+      .then(async () => {
+        activeRequestId = data.requestId;
+        try {
+          if (!cancelledRequestIds.has(data.requestId)) await generate(data);
+        } finally {
+          activeRequestId = "";
+          cancelledRequestIds.delete(data.requestId);
+        }
+      })
+      .catch(async (error) => {
+        if (isGpuResourceError(error)) await releaseEngine();
+        if (/generation cancelled/i.test(readableError(error))) return;
         post("generation-error", {
           requestId: data.requestId,
           recoverable: true,

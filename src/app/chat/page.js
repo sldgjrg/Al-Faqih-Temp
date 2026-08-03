@@ -32,12 +32,15 @@ import {
   elucidationMessages,
   methodEvidenceSynthesis,
   importanceEvidenceSynthesis,
+  legalEvidenceSynthesis,
+  lineageMarriageEvidenceSynthesis,
   parseElucidationJson,
   parseQueryAnalysisJson,
   queryAnalysisMessages,
   reportedEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
+  visualDepictionEvidenceSynthesis,
   virtueEvidenceSynthesis,
 } from "@/lib/local-model-prompts";
 
@@ -45,7 +48,7 @@ const THINKING_PHRASES = [
   { text: "Retrieving narrations...", lang: "English", dir: "ltr" },
   { text: "Yastakhrij al-riwayat... · يستخرج الروايات", lang: "العربية", dir: "ltr" },
   { text: "Riwayat ka istikhraj... · روایات کا استخراج", lang: "اردو", dir: "ltr" },
-  { text: "Labhna paiya... · روایتاں لبھ ریا آں", lang: "پنجابی", dir: "ltr" },
+//   { text: "Labhna paiya... · روایتاں لبھ ریا آں", lang: "پنجابی", dir: "ltr" },
 ];
 
 function makeConversation() {
@@ -94,7 +97,7 @@ function CalligraphyEffect({ source }) {
     };
 
     function sizeCanvas() {
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const ratio = Math.min(window.devicePixelRatio || 1, needsMobileSafeModel() ? 1 : 2);
       canvas.width = window.innerWidth * ratio;
       canvas.height = window.innerHeight * ratio;
       canvas.style.width = `${window.innerWidth}px`;
@@ -635,6 +638,7 @@ export default function LocalHadithChat() {
   const pendingRef = useRef(new Map());
   const chatWorkerRef = useRef(null);
   const modelReadyRef = useRef(false);
+  const mobileRetrievalOnlyRef = useRef(false);
   const llmPendingRef = useRef(new Map());
   const inputRef = useRef(null);
   const scrollRef = useRef(null);
@@ -643,6 +647,11 @@ export default function LocalHadithChat() {
 
   function requestLocalGeneration(messages, options = {}) {
     const mode = options.mode || "conversation";
+    if (mobileRetrievalOnlyRef.current) {
+      return Promise.reject(new Error(
+        "Hadith search is available, but WebGPU generation is disabled on this mobile device to prevent browser crashes.",
+      ));
+    }
     const worker = chatWorkerRef.current;
     if (!worker) return Promise.reject(new Error("The local WebGPU model worker is not available."));
     const requestId = crypto.randomUUID();
@@ -658,6 +667,7 @@ export default function LocalHadithChat() {
       const timer = window.setTimeout(() => {
         if (!llmPendingRef.current.has(requestId)) return;
         llmPendingRef.current.delete(requestId);
+        worker.postMessage({ type: "cancel", requestId });
         reject(new Error("The local WebGPU model did not finish before the timeout."));
       }, timeoutMs);
       llmPendingRef.current.set(requestId, { resolve, reject, timer });
@@ -816,8 +826,22 @@ export default function LocalHadithChat() {
     }
 
     const mobileSafeModel = needsMobileSafeModel();
+    mobileRetrievalOnlyRef.current = mobileSafeModel;
+    if (mobileSafeModel) {
+      modelReadyRef.current = false;
+      setModelState({
+        status: "retrieval-only",
+        message: "Hadith retrieval stays active without allocating a large WebGPU model",
+        percent: null,
+        device: "mobile-safe",
+        detail: "This prevents GPU-buffer and out-of-memory tab crashes on mobile browsers",
+      });
+      return () => {
+        mobileRetrievalOnlyRef.current = false;
+      };
+    }
     try {
-      chatWorker = new Worker("/local-llm.worker.js?v=26", {
+      chatWorker = new Worker("/local-llm.worker.js?v=31", {
         name: "al-faqih-qwen-webgpu",
         type: "module",
       });
@@ -856,17 +880,7 @@ export default function LocalHadithChat() {
 
     navigator.storage?.persist?.().catch(() => {});
     chatWorker.postMessage({ type: "configure", preferSmallModel: mobileSafeModel });
-    if (mobileSafeModel) {
-      setModelState({
-        status: "deferred",
-        message: "The compact local model will load only if a generated answer needs it",
-        percent: null,
-        device: "webgpu",
-        detail: "Hadith retrieval does not load the language model",
-      });
-    } else {
-      chatWorker.postMessage({ type: "init" });
-    }
+    chatWorker.postMessage({ type: "init" });
 
     return () => {
       chatWorkerRef.current = null;
@@ -884,7 +898,7 @@ export default function LocalHadithChat() {
     // and the browser use the same tokenizer and scorer.
     let worker;
     try {
-      worker = new Worker("/hadith-search.worker.js?v=30", { name: "hadith-search", type: "module" });
+      worker = new Worker("/hadith-search.worker.js?v=31", { name: "hadith-search", type: "module" });
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : "Could not start local search");
       setEngineStatus("");
@@ -985,13 +999,25 @@ export default function LocalHadithChat() {
         const reportedSynthesis = data.results.length && pending?.retrievalProfile?.facet === "reported-evidence"
           ? reportedEvidenceSynthesis(synthesisEvidence)
           : "";
+        const lineageMarriageSynthesis = data.results.length && pending?.retrievalProfile?.facet === "lineage-marriage"
+          ? lineageMarriageEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const visualDepictionSynthesis = data.results.length && pending?.retrievalProfile?.facet === "visual-depiction"
+          ? visualDepictionEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const legalSynthesis = data.results.length && pending?.retrievalProfile?.facet === "legal-practical"
+          ? legalEvidenceSynthesis(synthesisEvidence)
+          : "";
         const sourceSynthesis = methodSynthesis
           || timeSynthesis
           || definitionSynthesis
           || biographicalSynthesis
           || virtueSynthesis
           || importanceSynthesis
-          || reportedSynthesis;
+          || reportedSynthesis
+          || lineageMarriageSynthesis
+          || visualDepictionSynthesis
+          || legalSynthesis;
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
           conversation.id === conversationId
@@ -1343,7 +1369,18 @@ export default function LocalHadithChat() {
           conversation.id === current.id
             ? { ...conversation, messages: conversation.messages.map((message) =>
                 message.id === localMessageId
-                  ? { id: localMessageId, role: "assistant", error: error instanceof Error ? error.message : "The local model could not answer." }
+                  ? mobileRetrievalOnlyRef.current
+                    ? {
+                        id: localMessageId,
+                        role: "assistant",
+                        conversation: {
+                          intent: "mobile-safe",
+                          language: localResponse.language,
+                          text: "Mobile-safe mode keeps the large WebGPU model off to prevent the browser tab from crashing. The local hadith search remains fully available for religious questions.",
+                          source: "mobile-safe",
+                        },
+                      }
+                    : { id: localMessageId, role: "assistant", error: error instanceof Error ? error.message : "The local model could not answer." }
                   : message) }
             : conversation));
       }
@@ -1385,56 +1422,23 @@ export default function LocalHadithChat() {
               ...conversation.messages,
               userMessage,
           { id: requestId, role: "assistant", loading: true, status: localResponse.retrievalProfile?.needsQueryAnalysis
-            ? "Analyzing the exact subject and requested evidence"
+            ? "Searching the corpus before semantic fallback"
             : "Preparing the local index" },
             ],
           }
         : conversation));
     setInput("");
-    if (!localResponse.retrievalProfile?.needsQueryAnalysis) {
-      workerRef.current?.postMessage({
-        type: "search",
-        requestId,
-        query: retrievalQuery,
-        filters,
-        retrievalProfile: localResponse.retrievalProfile || null,
-      });
-      return;
-    }
-    try {
-      const generation = await requestLocalGeneration(
-        queryAnalysisMessages(localResponse.synthesisQuery || query),
-        { mode: "query-analysis", maxNewTokens: 220, temperature: 0 },
-      );
-      const analysis = parseQueryAnalysisJson(generation.text);
-      if (!analysis) throw new Error("The local query analysis was not valid JSON.");
-      const refined = applyQueryAnalysisToSearchPlan(
-        retrievalQuery,
-        localResponse.retrievalProfile || {},
-        analysis,
-      );
-      pendingRef.current.set(requestId, {
-        ...pendingRef.current.get(requestId),
-        retrievalQuery: refined.searchQuery,
-        retrievalProfile: refined.retrievalProfile,
-        queryAnalysis: analysis,
-      });
-      workerRef.current?.postMessage({
-        type: "search",
-        requestId,
-        query: refined.searchQuery,
-        filters,
-        retrievalProfile: refined.retrievalProfile,
-      });
-    } catch {
-      workerRef.current?.postMessage({
-        type: "search",
-        requestId,
-        query: retrievalQuery,
-        filters,
-        retrievalProfile: localResponse.retrievalProfile || null,
-      });
-    }
+    // Always try the indexed corpus before loading an LLM. The search worker
+    // requests semantic rewriting only when the first grounded pass is empty,
+    // which keeps ordinary hadith questions fast and prevents mobile WebGPU
+    // allocation for queries the local index already answers.
+    workerRef.current?.postMessage({
+      type: "search",
+      requestId,
+      query: retrievalQuery,
+      filters,
+      retrievalProfile: localResponse.retrievalProfile || null,
+    });
   }
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
@@ -1548,6 +1552,8 @@ export default function LocalHadithChat() {
             <strong>
               {modelState.status === "ready"
                 ? "Local language model ready"
+                : modelState.status === "retrieval-only"
+                  ? "Mobile-safe hadith mode"
                 : modelState.status === "error"
                   ? "Local model error"
                   : modelState.status === "deferred"

@@ -2,7 +2,7 @@ import { resolveBookAuthorship } from "./book-catalog.js";
 import { cleanCorpusDisplay } from "./corpus-display.js";
 
 const ENGLISH_STOP_WORDS = new Set(
-  "a about an and are as at be been can concerning could did do does for from had has have how i if in into is it me my narrated of on or please regarding related reported said tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
+  "a about an and are as at be been can concerning could did do does for from had has have how i if in into is it may me must my narrated of on or please regarding related reported said should tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
 );
 
 const GENERIC_QUERY_WORDS = new Set(
@@ -22,17 +22,31 @@ const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
   barzakh: "intermediate realm",
   dua: "supplication",
   fajr: "dawn",
+  ghair: "non",
   ghusl: "ritual bath",
   hayat: "life",
   ilm: "knowledge",
   imamah: "leadership",
   najasah: "impurity",
   najis: "impure",
+  nikah: "marriage",
+  nikkah: "marriage",
   quddus: "holy",
   qudus: "holy",
   rooh: "spirit",
   rouh: "spirit",
   ruh: "spirit",
+  sayed: "Hashimite descendant",
+  sayyid: "Hashimite descendant",
+  sayyida: "Hashimite woman",
+  sayyidah: "Hashimite woman",
+  shabeeh: "representation depiction reenactment",
+  shabih: "representation depiction reenactment",
+  syed: "Hashimite descendant",
+  syedah: "Hashimite woman",
+  syedani: "Hashimite woman",
+  tasveer: "picture image depiction",
+  tasvir: "picture image depiction",
   salah: "prayer",
   salat: "prayer",
   sawm: "fasting",
@@ -47,7 +61,7 @@ const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
 }));
 
 const ROMAN_ARABIC_CONNECTORS = new Set(
-  "al el e i ul ud us as ash ar ur uz".split(" "),
+  "al el e i ul ud us as ash ar ur uz ka kay ke ki ko se aur mein main".split(" "),
 );
 
 const ENGLISH_PRENOMINAL_ADJECTIVES = new Set(
@@ -94,11 +108,11 @@ const IMAM_SEARCH_ALIASES = new Map(Object.entries({
   askari: ["Imam al-Askari", "Abu Muhammad al-Hassan ibn Ali"],
 }));
 
-const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam)\b/i;
+const ROMAN_URDU = /\b(kya|kaise|kyun|mujhe|mera|meri|aap|ap|hain|hai|batao|bataein|yaad|rakho|shukriya|salam|syedani|syedah|ghair|nikah|nikkah|tasveer|shabih|shabeeh)\b/i;
 const ROMAN_PUNJABI = /\b(tusi|tuhada|mainu|mera naa|kiven|kidda|ki haal|labhna|paiya|changa|yaad rakho)\b/i;
 const ROMAN_ARABIC = /\b(marhaban|kayfa|anta|anti|ana|shukran|ma'a salama|assalamu|salam alaykum)\b/i;
 
-const RELIGIOUS_DOMAIN = /\b(?:ahl(?:ul| al)[-\s]?bayt|allah|islam(?:ic)?|shia|shi['’]?a|imam|imamah|ma['’]?s(?:oo|u)m|prophet|nabi|rasul|quran|sunnah|hadith|ahadith|riwaya|riwayat|aqeedah|tawhid|wilayah|walayah|fiqh|wajib|mustahab|makruh|mubah|halal|haram)\b/i;
+const RELIGIOUS_DOMAIN = /\b(?:ahl(?:ul| al)[-\s]?bayt|allah|islam(?:ic)?|shia|shi['’]?a|imam|imamah|ma['’]?s(?:oo|u)m|prophet|nabi|rasul|quran|sunnah|hadith|ahadith|riwaya|riwayat|aqeedah|tawhid|wilayah|walayah|fiqh|wajib|mustahab|makruh|mubah|halal|haram|nikah|nikkah|sayyid|sayyida|sayyidah|syed|syedah|syedani|azadari|majlis|karbala|shabih|shabeeh|tasveer|tasvir)\b/i;
 const RELIGIOUS_SCRIPT_DOMAIN = /(?:الله|الإسلام|اسلام|الشيعة|شیعہ|أهل البيت|اہل بیت|إمام|امام|القرآن|قرآن|حديث|حدیث|رواية|روایت|توحيد|توحید|إمامة|امامت|ولاية|ولایت|رجعة|رجعت|بداء|برزخ|قيامة|قیامت|تقليد|تقلید|اجتهاد|فقه|حلال|حرام|واجب|مستحب|مكروه|زكاة|زکات|خمس|حج|عمرة|نماز|صلاة|صوم|نكاح|نکاح|طلاق)/u;
 
 const RELIGIOUS_FOLLOW_UP = /^(?:(?:no|nah|yes|yeah|okay|ok|please)\s+)*(?:now\s+)?(?:find|show|give|bring|search(?:\s+for)?|cite|source)\s+(?:(?:me|us)\s+)?(?:(?:the|those|some|any)\s+)?(?:hadith|ahadith|narration|narrations|riwaya|riwayat|reports?|sources?)(?:\s+(?:on|about|for|it|that|this|them))?[.!?]*$/i;
@@ -176,6 +190,116 @@ const MAHDI_QUERY = /\b(?:imam(?:-e)?\s+(?:zaman|zamana)|imam\s+of\s+the\s+age|s
 const MAHDI_SCRIPT_QUERY = /(?:امام زمان|صاحب الزمان|صاحب العصر|المهدي|القائم)/u;
 
 const RETRIEVAL_FACETS = [
+  {
+    // A visual-representation question is not an appearance-description
+    // question. Search distinct rules and reported uses of pictures instead
+    // of treating an Imam's appearance or generic mourning as picture proof.
+    name: "visual-depiction",
+    pattern: /\b(?:pictures?|images?|portraits?|draw(?:ing|n|s)?|paint(?:ing|ed|s)?|depict(?:ion|ed|ing|s)?|represent(?:ation|ed|ing|s)?|likeness|statues?|photographs?|photos?|shabih|shabeeh|tasveer|tasvir)\b/i,
+    scriptPattern: /(?:صورة|صور|تصوير|تمثال|تماثيل|شبيه|تشبيه)/u,
+    strict: false,
+    terms: [
+      "picture", "pictures", "image", "portrait", "drawing", "depiction",
+      "representation", "likeness", "statue", "furnishings", "house",
+    ],
+    deterministicEvidence: true,
+    evidenceQueries: [
+      {
+        role: "display-context",
+        query: "pictures furnishings house not unlawful under feet",
+        subjects: ["pictures furnishings"],
+        literalAnchors: ["picture", "pictures"],
+      },
+      {
+        role: "making-context",
+        query: "forms pictures statues blow spirit creator",
+        subjects: ["forms pictures", "forms statues"],
+        literalAnchors: ["picture", "pictures", "statue", "statues"],
+      },
+      {
+        role: "altered-image-context",
+        query: "pictures statues house heads changed not harmful",
+        subjects: ["pictures statues"],
+        literalAnchors: ["picture", "pictures", "statue", "statues"],
+      },
+    ],
+    resultLimit: 6,
+    maxDirectResults: 4,
+    maxFamilyMembers: 4,
+    maxPerChapter: 4,
+    minUniqueResults: 3,
+    maxUniqueResults: 7,
+    candidateLimit: 160,
+    expandedLimit: 280,
+    seedLimit: 10,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.38,
+    relatedFloorRatio: 0.3,
+  },
+  {
+    // Marriage compatibility is a relation between faith, lineage and social
+    // status. These evidence lanes apply to caste, tribe, race, clan and
+    // Sayyid/non-Sayyid wording, including compositional Roman-Urdu queries.
+    name: "lineage-marriage",
+    pattern: /\b(?:(?:say+id|sayed|syed|syedani|syedah|hashimi|hashimite|banu\s+hashim|lineage|genealogy|ancestry|caste|tribe|clan|race|social\s+status|family\s+status|kaf[a']?ah|kufu)\b.{0,72}\b(?:marry|marriage|nikah|nikkah|spouse|match)|(?:marry|marriage|nikah|nikkah|spouse|match)\b.{0,72}\b(?:say+id|sayed|syed|syedani|syedah|hashimi|hashimite|banu\s+hashim|lineage|genealogy|ancestry|caste|tribe|clan|race|social\s+status|family\s+status|kaf[a']?ah|kufu))\b/i,
+    scriptPattern: /(?:(?:سيد|سيدة|هاشمي|هاشمية|نسب|قبيلة|كفاءة).{0,48}(?:زواج|نكاح)|(?:زواج|نكاح).{0,48}(?:سيد|سيدة|هاشمي|هاشمية|نسب|قبيلة|كفاءة))/u,
+    strict: false,
+    terms: [
+      "marriage", "believer", "believing woman", "match", "piety",
+      "lineage", "genealogy", "tribe", "Quraysh", "Banu Hashim",
+    ],
+    deterministicEvidence: true,
+    evidenceQueries: [
+      {
+        role: "faith-compatibility",
+        query: "believers good match believing women daughter marriage pious genealogy",
+        subjects: ["believers match believing women"],
+        literalAnchors: ["believer", "believers", "believing"],
+      },
+      {
+        role: "prophetic-precedent",
+        query: "Miqdad Dubaah daughter Zubayr marriage most pious",
+        subjects: ["Miqdad Dubaah"],
+        literalAnchors: ["miqdad"],
+      },
+      {
+        role: "lineage-precedent",
+        query: "Juwayabir daughter marriage Islam tribe genealogy pious",
+        subjects: ["Juwayabir daughter"],
+        literalAnchors: ["juwayabir", "juwaybir"],
+      },
+      {
+        role: "social-status-precedent",
+        query: "Ali ibn Husayn married slave girl Islam removed lowliness blame ignorance",
+        subjects: ["Islam removed lowliness"],
+        literalAnchors: ["lowliness"],
+      },
+      {
+        role: "general-compatibility",
+        query: "proper match chaste affluent marriage",
+        subjects: ["proper match"],
+        literalAnchors: ["match"],
+      },
+    ],
+    resultLimit: 6,
+    maxDirectResults: 5,
+    maxFamilyMembers: 5,
+    maxPerChapter: 4,
+    minUniqueResults: 4,
+    maxUniqueResults: 8,
+    candidateLimit: 200,
+    expandedLimit: 320,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.36,
+    relatedFloorRatio: 0.28,
+  },
   {
     name: "appearance",
     pattern: /\b(?:what\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look\s+like|how\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look|look(?:s|ed)?\s+like|physical\s+(?:appearance|description|features?)|describe\s+(?:his|the\s+imam(?:'s)?|imam\s+mahdi(?:'s)?|al[-\s]?mahdi(?:'s)?|al[-\s]?qaim(?:'s)?)\s+(?:appearance|features?|face|body)|appearance\s+of\s+(?:imam|the\s+imam|imam\s+mahdi|mahdi|the\s+mahdi|al[-\s]?qaim|the\s+qaim)|features?|complexion|forehead|eyebrows?|eyes?|nose|cheeks?|mole|beard|hair|curly|wavy|stature|height|build|shoulders?|young-looking|age appearance)\b/i,
@@ -395,7 +519,7 @@ function entityExpansion(query, normalized) {
   const namedImam = normalized.match(/\bimam\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,4})/iu);
   if (!namedImam) return { text: "", terms: [], searchAliases: [], detected: false };
   const relationBoundaries = new Set(
-    "about appearance born birth die died death do does did look looks looked mean means rule ruled say said when where why how was were is are can could should".split(" "),
+    "about appearance born birth die died death do does did look looks looked mean means rule ruled say said when where why how was were is are can could should for from in of on regarding during mourning azadari majlis karbala picture image depiction representation".split(" "),
   );
   const entityTokens = [];
   for (const token of namedImam[1].split(/\s+/).filter(Boolean)) {
@@ -438,7 +562,8 @@ function requestedCollection(query, manifest) {
 function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries = []) {
   const wordCount = normalized.split(/\s+/).filter(Boolean).length;
   const knownCorpusTerms = corpusTermCount(original, manifest);
-  if (facet?.name === "time-definition") return true;
+  if (facet?.deterministicEvidence) return false;
+  if (facet?.name === "time-definition") return false;
   if (glossaryQueries.length || facet?.name === "biographical-event") return false;
   if (facet?.name === "virtues" || facet?.name === "importance") return false;
   if (facet?.name === "reported-evidence") return false;
@@ -685,7 +810,19 @@ export function buildReligiousSearchPlan(query, manifest) {
   const reportedEvidenceQuery = reportedEvidence.queryTerms.length
     ? `${[...new Set([...reportedEvidence.queryTerms, ...subjectTerms])].join(" ")} asked instructed replied continued observed`
     : "";
-  const expansionParts = [semanticGlossQuery || original, entity.text];
+  const facetEvidenceQueries = Array.isArray(facet?.evidenceQueries)
+    ? facet.evidenceQueries.filter((entry) => entry?.query)
+    : [];
+  const timeSearchQuery = facet?.name === "time-definition"
+    ? (() => {
+        const relationTerms = semanticGlossTokens.length ? semanticGlossTokens : subjectTerms;
+        const terms = [...new Set(relationTerms)]
+          .filter((term) => term.length >= 3 && term !== "pray");
+        if (!terms.includes("time")) terms.push("time");
+        return terms.join(" ");
+      })()
+    : "";
+  const expansionParts = [timeSearchQuery || semanticGlossQuery || original, entity.text];
   const expandMethodContext = facet?.name === "method"
     && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
   const methodIntentTerms = new Set((facet?.terms || [])
@@ -714,7 +851,7 @@ export function buildReligiousSearchPlan(query, manifest) {
         ...subjectTerms,
       ],
       entityTerms: entity.terms,
-      requireEntityMatch: entity.detected,
+      requireEntityMatch: entity.detected && facet?.name !== "visual-depiction",
       requiredTitlePhrase: facet?.name === "biographical-event" ? entity.text : "",
       minimumTitleEntityCoverage: 0.66,
       // General questions should not be rejected merely because an English
@@ -726,25 +863,46 @@ export function buildReligiousSearchPlan(query, manifest) {
       minimumFocusCoverage: 0.6,
       requiredCollection,
       secondaryQuery: "",
-      secondaryQueries: [definitionEvidenceQuery, importanceEvidenceQuery, ...biographicalEvidenceQueries, reportedEvidenceQuery].filter(Boolean),
-      secondaryBoostTerms: [definitionEvidenceQuery, importanceEvidenceQuery, ...biographicalEvidenceQueries, reportedEvidenceQuery].join(" ").split(/\s+/).filter(Boolean),
+      secondaryQueries: [
+        ...facetEvidenceQueries.map((entry) => entry.query),
+        definitionEvidenceQuery,
+        importanceEvidenceQuery,
+        ...biographicalEvidenceQueries,
+        reportedEvidenceQuery,
+      ].filter(Boolean),
+      secondaryBoostTerms: [
+        ...facetEvidenceQueries.map((entry) => entry.query),
+        definitionEvidenceQuery,
+        importanceEvidenceQuery,
+        ...biographicalEvidenceQueries,
+        reportedEvidenceQuery,
+      ].join(" ").split(/\s+/).filter(Boolean),
       evidenceRoles: [
+        ...facetEvidenceQueries.map((entry) => entry.role || "supporting"),
         definitionEvidenceQuery ? "definition-detail" : "",
         importanceEvidenceQuery ? "importance-context" : "",
         ...biographicalEvidenceQueries.map((_, index) => ["death-cause", "final-illness", "burial-event"][index]),
         reportedEvidenceQuery ? "reported-practice" : "",
       ].filter(Boolean),
       evidenceQuerySubjects: [
+        ...facetEvidenceQueries.map((entry) => entry.subjects || []),
         definitionEvidenceQuery ? [semanticHeadTerm] : [],
         importanceEvidenceQuery ? subjectTerms : [],
         ...biographicalEvidenceQueries.map(() => entity.searchAliases),
         reportedEvidenceQuery ? reportedEvidence.subjectGroups : [],
       ].filter((group) => group.length),
+      evidenceQueryLiteralAnchors: [
+        ...facetEvidenceQueries.map((entry) => entry.literalAnchors || []),
+        ...(definitionEvidenceQuery ? [[]] : []),
+        ...(importanceEvidenceQuery ? [[]] : []),
+        ...biographicalEvidenceQueries.map(() => []),
+        ...(reportedEvidenceQuery ? [[]] : []),
+      ],
       resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
-      seedLimit: 16,
-      seedCount: 8,
-      candidateLimit: 360,
-      expandedLimit: 560,
+      seedLimit: facet?.seedLimit || 16,
+      seedCount: facet?.seedCount || 8,
+      candidateLimit: facet?.candidateLimit || 360,
+      expandedLimit: facet?.expandedLimit || 560,
       perSeed: 36,
       familyDepth: 2,
       familyPropagationThreshold: 0.48,
@@ -761,7 +919,7 @@ export function buildReligiousSearchPlan(query, manifest) {
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQueries.length || reportedEvidenceQuery
+      secondaryPromotionLimit: facetEvidenceQueries.length || definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQueries.length || reportedEvidenceQuery
         ? biographicalEvidenceQueries.length ? 8 : 6
         : (facet?.secondaryPromotionLimit || 4),
     },
@@ -932,7 +1090,9 @@ export function resolveLocalConversation(query, conversation, globalMemory, mani
     };
   }
   const religiousSearch = buildReligiousSearchPlan(contextualQuery, manifest);
-  if (religiousSearch.entityDetected || shouldRetrieveNarrations(contextualQuery, manifest)) {
+  if (religiousSearch.entityDetected
+    || religiousSearch.retrievalProfile.facet !== "general"
+    || shouldRetrieveNarrations(contextualQuery, manifest)) {
     return {
       intent: "religious-search",
       language,

@@ -29,7 +29,7 @@ const THINKING_PHRASES = [
   { text: "Retrieving narrations...", lang: "English", dir: "ltr" },
   { text: "Yastakhrij al-riwayat... · يستخرج الروايات", lang: "العربية", dir: "ltr" },
   { text: "Riwayat ka istikhraj... · روایات کا استخراج", lang: "اردو", dir: "ltr" },
-  { text: "Labhna paiya... · روایتاں لبھ ریا آں", lang: "پنجابی", dir: "ltr" },
+  // { text: "Labhna paiya... · روایتاں لبھ ریا آں", lang: "پنجابی", dir: "ltr" },
 ];
 
 function makeConversation() {

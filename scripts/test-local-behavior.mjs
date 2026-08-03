@@ -10,11 +10,14 @@ import {
   biographicalEvidenceSynthesis,
   definitionEvidenceSynthesis,
   importanceEvidenceSynthesis,
+  legalEvidenceSynthesis,
+  lineageMarriageEvidenceSynthesis,
   methodEvidenceSynthesis,
   parseQueryAnalysisJson,
   reportedEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
+  visualDepictionEvidenceSynthesis,
   virtueEvidenceSynthesis,
 } from "../src/lib/local-model-prompts.js";
 import { resolveQueryTokens } from "../public/hadith-retrieval-core.mjs";
@@ -50,6 +53,21 @@ assert.match(
   /data\.type === "configure"[\s\S]+preferSmallModel/,
   "the model worker must accept the mobile-safe model preference before loading",
 );
+assert.match(
+  localModelWorkerSource,
+  /data\.type === "cancel"[\s\S]+interruptGenerate/,
+  "a timed-out generation must be interruptible instead of blocking later requests",
+);
+assert.match(
+  localModelWorkerSource,
+  /storage buffer|gpu buffer|buffer.*allocation/i,
+  "WebGPU buffer allocation failures must be classified as recoverable resource failures",
+);
+assert.match(
+  genericRuntimeSources[2],
+  /mobileRetrievalOnlyRef[\s\S]+WebGPU generation is disabled/,
+  "mobile browsers must keep corpus retrieval available without allocating the WebGPU model",
+);
 
 async function routedSearch(query, profileUpdate = {}) {
   const route = resolveLocalConversation(query, { messages: [] }, {}, manifest);
@@ -80,6 +98,57 @@ async function analyzedSearch(query, analysis, profileUpdate = {}) {
 function hasLink(results, fragment) {
   return results.some(({ link }) => link.includes(fragment));
 }
+
+for (const query of [
+  "can a syed woman marry a non syed man",
+  "syedani ka nikah ghair syed se",
+  "does caste or family lineage prevent a marriage",
+]) {
+  const lineageMarriage = await routedSearch(query);
+  assert.equal(lineageMarriage.route.retrievalProfile.facet, "lineage-marriage");
+  assert.equal(
+    lineageMarriage.route.retrievalProfile.needsQueryAnalysis,
+    false,
+    "lineage-compatibility questions must stay on the fast deterministic evidence path",
+  );
+  assert.ok(
+    lineageMarriage.results[0]?.link.includes("/5/3/21/1"),
+    `lineage marriage must lead with the believer-compatibility precedent; got ${lineageMarriage.results.map(({ link }) => link).join(", ")}`,
+  );
+  assert.ok(
+    hasLink(lineageMarriage.results, "/5/3/22/1") || hasLink(lineageMarriage.results, "/5/3/22/2"),
+    "lineage marriage must include the Prophet's marriage of Miqdad and Duba'ah",
+  );
+  assert.ok(
+    hasLink(lineageMarriage.results, "/5/3/25/1"),
+    "lineage marriage must retain the stated chaste-and-affluent compatibility criterion",
+  );
+  assert.match(lineageMarriageEvidenceSynthesis(lineageMarriage.results), /Miqdad|Duba/i);
+}
+
+for (const query of [
+  "picture of imam for mourning",
+  "tasveer e imam azadari mein",
+  "can a portrait or depiction be displayed",
+]) {
+  const depiction = await routedSearch(query);
+  assert.equal(depiction.route.retrievalProfile.facet, "visual-depiction");
+  assert.equal(depiction.route.retrievalProfile.needsQueryAnalysis, false);
+  assert.ok(
+    depiction.results.slice(0, 4).some(({ link }) => link.includes("/6/7/65/6")),
+    "a depiction query must include the direct picture-on-furnishings report",
+  );
+  assert.ok(
+    depiction.results.slice(0, 5).every((result) => /picture|statue|portrait|form(?:s|ed)?/i.test(`${result.title} ${result.chapter} ${result.text}`)),
+    "mourning vocabulary must not promote unrelated Karbala-merit or elegy reports into a depiction answer",
+  );
+}
+const depictionSynthesis = visualDepictionEvidenceSynthesis(
+  (await routedSearch("picture of imam for mourning")).results,
+);
+assert.match(depictionSynthesis, /does not identify any portrait as an authentic likeness/i);
+assert.match(depictionSynthesis, /does not specifically describe.*mourning procession/i);
+assert.doesNotMatch(depictionSynthesis, /therefore.*(?:allowed|forbidden|haram)/i);
 
 const ridaMartyrdom = await routedSearch("Can you inform me about the event of the martyrdom of imam rida");
 assert.equal(ridaMartyrdom.route.retrievalProfile.facet, "biographical-event");
@@ -188,19 +257,13 @@ assert.ok(
   "a natural how-to phrasing must lead with the action-bearing aqeeqah procedure",
 );
 
-const fajr = await analyzedSearch("what time should I pray fajr", {
-  retrievalQuery: "Fajr morning prayer time true dawn white light spreading horizontally across horizon until sunrise",
-  exactSubjects: ["Fajr prayer time"],
-  evidenceSubjects: ["true dawn white light across the horizon", "beginning and end of morning prayer time"],
-  answerCriteria: ["observable beginning of prayer time", "white light across the horizon", "ending at sunrise"],
-  evidenceQueries: [
-    { role: "direct", query: "time of morning Salah dawn appears until rays of sun", requiredSubjects: ["morning Salah time"] },
-    { role: "observable-sign", query: "true dawn white line horizontal like fine linen horizon rays sunrise", requiredSubjects: ["true dawn"] },
-  ],
-  relation: "time-definition",
-  confidence: 0.95,
-});
+const fajr = await routedSearch("what time should I pray fajr");
 assert.equal(fajr.route.retrievalProfile.facet, "time-definition");
+assert.equal(
+  fajr.route.retrievalProfile.needsQueryAnalysis,
+  false,
+  "time questions must expand their matching corpus chapter without waiting for the model",
+);
 assert.ok(
   fajr.results.slice(0, 3).some((result) => result.link.includes("/3/4/7/")),
   "a time question must rank the chapter defining morning prayer time",
@@ -415,6 +478,10 @@ assert.ok(
 assert.ok(
   novelPracticalEvidence.results.some((result) => result.link.includes("/6/7/43/22")),
   "a provider-context grooming question must include the bathhouse owner report",
+);
+assert.match(
+  legalEvidenceSynthesis(novelPracticalEvidence.results),
+  /no broader yes-or-no ruling has been added/i,
 );
 const modernVocabularyEvidence = await search(
   "female waxing another female body hair removal depilatory lime paste privacy work",
