@@ -30,6 +30,33 @@ const REPORTED_FEEDBACK_STOP_WORDS = new Set(
   "about after al an and are as at be been book by chapter collection for from had has have into is it its hadith imam make making narration not of on one ones or others over people regarding report reward said says section that the their them these this those to under upon volume was were who with".split(" "),
 );
 
+function resultIdentityKeys(result = {}) {
+  return [result.link, result.id, result.clusterId]
+    .filter((value) => value !== undefined && value !== null && String(value))
+    .map(String);
+}
+
+function matchesRequiredPhraseGroups(text, groups = [], maximumWindow = 0) {
+  if (!Array.isArray(groups) || !groups.length) return true;
+  const normalizedText = normalizeText(text || "");
+  const positionsByGroup = groups.map((alternatives) => {
+    const phrases = Array.isArray(alternatives) ? alternatives : [alternatives];
+    return phrases.flatMap((phrase) => {
+      const normalizedPhrase = normalizeText(phrase || "");
+      if (!normalizedPhrase) return [];
+      const positions = [];
+      for (let index = normalizedText.indexOf(normalizedPhrase); index >= 0; index = normalizedText.indexOf(normalizedPhrase, index + 1)) {
+        positions.push(index);
+      }
+      return positions;
+    });
+  });
+  if (positionsByGroup.some((positions) => !positions.length)) return false;
+  if (!maximumWindow || positionsByGroup.length < 2) return true;
+  return positionsByGroup[0].some((anchor) => positionsByGroup.slice(1)
+    .every((positions) => positions.some((position) => Math.abs(position - anchor) <= maximumWindow)));
+}
+
 function reportedFeedbackExpansion(result = {}) {
   const terms = [...new Set(normalizeText(result.chapter || result.title || "")
     .split(/\s+/)
@@ -192,6 +219,13 @@ async function loadCandidateRecords(candidates) {
 }
 
 async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}) {
+  const excludedResultKeys = new Set(
+    (Array.isArray(retrievalProfile?.excludeResultKeys) ? retrievalProfile.excludeResultKeys : []).map(String),
+  );
+  const isExcluded = (result) => resultIdentityKeys(result).some((key) => excludedResultKeys.has(key));
+  const workingResultLimit = excludedResultKeys.size
+    ? Math.max(resultLimit, Math.min(32, resultLimit + Math.ceil(excludedResultKeys.size / 2) + 6))
+    : resultLimit;
   const { plan, candidates } = rankPassageCandidates({
     manifest,
     passageHashes,
@@ -232,8 +266,9 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     plan,
     candidates: expandedCandidates,
     records,
-    resultLimit,
-  }).map((result) => ({ ...result, evidenceRole: "direct" }));
+    resultLimit: workingResultLimit,
+  }).map((result) => ({ ...result, evidenceRole: "direct" }))
+    .filter((result) => !isExcluded(result));
   if (retrievalProfile?.expandMethodContext) {
     const procedureCandidates = expandedCandidates
       .filter((candidate) => hasMethodSubject({ text: records.get(candidate.id) || "" }, retrievalProfile?.methodSubjectTerms)
@@ -261,7 +296,7 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
         if (seenContext.has(key)) return false;
         seenContext.add(key);
         return true;
-      }).slice(0, resultLimit);
+      }).filter((result) => !isExcluded(result)).slice(0, resultLimit);
     }
   }
   const secondaryQueries = [
@@ -277,12 +312,18 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     const dynamicEvidenceRoles = [...(retrievalProfile?.evidenceRoles || [])];
     const dynamicSubjectGroups = [...(retrievalProfile?.evidenceQuerySubjects || [])];
     const dynamicLiteralAnchors = [...(retrievalProfile?.evidenceQueryLiteralAnchors || [])];
+    const dynamicRequiredPhraseGroups = [...(retrievalProfile?.evidenceQueryRequiredPhraseGroups || [])];
+    const dynamicRequiredPhraseWindows = [...(retrievalProfile?.evidenceQueryRequiredPhraseWindows || [])];
     while (dynamicLiteralAnchors.length < plannedSecondaryCount) dynamicLiteralAnchors.push([]);
+    while (dynamicRequiredPhraseGroups.length < plannedSecondaryCount) dynamicRequiredPhraseGroups.push([]);
+    while (dynamicRequiredPhraseWindows.length < plannedSecondaryCount) dynamicRequiredPhraseWindows.push(0);
     for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
       const secondaryQuery = secondaryQueries[queryIndex];
       const evidenceRole = dynamicEvidenceRoles[queryIndex] || "supporting";
       const requiredSubjects = dynamicSubjectGroups[queryIndex] || [];
       const requiredLiteralAnchors = dynamicLiteralAnchors[queryIndex] || [];
+      const requiredPhraseGroups = dynamicRequiredPhraseGroups[queryIndex] || [];
+      const requiredPhraseWindow = Number(dynamicRequiredPhraseWindows[queryIndex]) || 0;
       const secondaryProfile = {
         ...retrievalProfile,
         secondaryQuery: "",
@@ -299,9 +340,10 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
         subjectTermGroups: requiredSubjects.length ? requiredSubjects : (isTimingEvidence ? [] : [secondaryQuery]),
         minimumSubjectCoverage: isReportedEvidence || retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         allowFullRecordSubjectMatch: !isReportedEvidence || queryIndex < plannedSecondaryCount,
-        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? false : true,
+        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence
+          || retrievalProfile?.deterministicEvidence ? false : true,
         minimumFocusCoverage: 0.34,
-        disableFocus: isBiographicalEvidence || isReportedEvidence,
+        disableFocus: isBiographicalEvidence || isReportedEvidence || retrievalProfile?.deterministicEvidence,
         requireFocusFacetProximity: false,
         requiredTitlePhrase: retrievalProfile?.facet === "biographical-event"
           ? ""
@@ -332,19 +374,23 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
       });
       if (!secondaryRanked.candidates.length) continue;
       const secondaryRecords = await loadCandidateRecords(secondaryRanked.candidates);
+      const anchoredCandidates = secondaryRanked.candidates.filter((candidate) => {
+        const recordText = secondaryRecords.get(candidate.id) || "";
+        if (requiredLiteralAnchors.length) {
+          const literalTokens = new Set(normalizeText(recordText).split(/\s+/));
+          if (!requiredLiteralAnchors.some((anchor) => literalTokens.has(normalizeText(anchor)))) return false;
+        }
+        return matchesRequiredPhraseGroups(recordText, requiredPhraseGroups, requiredPhraseWindow);
+      });
       let supplementalBucket = rerankLoadedRecords({
         manifest,
         plan: secondaryRanked.plan,
-        candidates: secondaryRanked.candidates,
+        candidates: anchoredCandidates,
         records: secondaryRecords,
-        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence || isReportedEvidence ? 8 : 5,
-      }).map((result) => ({ ...result, evidenceRole }));
-      if (requiredLiteralAnchors.length) {
-        supplementalBucket = supplementalBucket.filter((result) => {
-          const literalTokens = new Set(normalizeText(`${result.title} ${result.chapter} ${result.text}`).split(/\s+/));
-          return requiredLiteralAnchors.some((anchor) => literalTokens.has(anchor));
-        });
-      }
+        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence
+          || isReportedEvidence || retrievalProfile?.deterministicEvidence ? 8 : 5,
+      }).map((result) => ({ ...result, evidenceRole }))
+        .filter((result) => !isExcluded(result));
       supplementalBuckets.push(supplementalBucket);
       const hasCompoundReportedSubject = requiredSubjects.some((group) => (
         normalizeText(group).split(/\s+/).filter(Boolean).length >= 2
@@ -356,6 +402,8 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
           dynamicEvidenceRoles.push(evidenceRole);
           dynamicSubjectGroups.push(feedback.subjectGroups);
           dynamicLiteralAnchors.push(feedback.literalAnchors);
+          dynamicRequiredPhraseGroups.push([]);
+          dynamicRequiredPhraseWindows.push(0);
         }
       }
     }
@@ -383,11 +431,12 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
     const seenSupplemental = new Set();
     let promotedSupplemental = supplementalResults.filter((result) => {
       const key = result.link || result.id;
-      if (seenSupplemental.has(key)) return false;
+      if (seenSupplemental.has(key) || isExcluded(result)) return false;
       seenSupplemental.add(key);
       return true;
     }).slice(0, Math.max(1, Math.min(
-      isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? 10 : 6,
+      isTimingEvidence || isBiographicalEvidence || isReportedEvidence
+        || retrievalProfile?.deterministicEvidence ? 10 : 6,
       Number(retrievalProfile?.secondaryPromotionLimit) || 3,
     )));
     if (retrievalProfile?.onePerEvidenceRole) {
@@ -396,13 +445,17 @@ async function search(query, { resultLimit = 5, filters, retrievalProfile } = {}
         .filter(Boolean);
     }
     const promotedKeys = new Set(promotedSupplemental.map((result) => result.link || result.id));
-    results = [
-      ...promotedSupplemental,
-      ...(usedReportedFeedback && promotedSupplemental.length
-        ? []
-        : results.filter((result) => !promotedKeys.has(result.link || result.id))),
-    ].slice(0, resultLimit);
+    results = (retrievalProfile?.evidenceOnly
+      ? promotedSupplemental
+      : [
+          ...promotedSupplemental,
+          ...(usedReportedFeedback && promotedSupplemental.length
+            ? []
+            : results.filter((result) => !promotedKeys.has(result.link || result.id))),
+        ]).filter((result) => !isExcluded(result)).slice(0, resultLimit);
   }
+  if (retrievalProfile?.evidenceOnly && !secondaryQueries.length) results = [];
+  results = results.filter((result) => !isExcluded(result)).slice(0, resultLimit);
   return { candidates, expandedCandidates, results };
 }
 

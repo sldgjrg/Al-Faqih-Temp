@@ -28,12 +28,16 @@ import {
 import {
   appendHadithOffer,
   biographicalEvidenceSynthesis,
+  bookReliabilityEvidenceSynthesis,
   conversationMessages,
   contestedLineageMarriageEvidenceSynthesis,
   definitionEvidenceSynthesis,
   elucidationMessages,
+  followUpRetrievalSynthesis,
   methodEvidenceSynthesis,
   importanceEvidenceSynthesis,
+  hajjCompanionshipEvidenceSynthesis,
+  juristAuthorityEvidenceSynthesis,
   legalEvidenceSynthesis,
   overlappingMarriageEvidenceSynthesis,
   lineageMarriageEvidenceSynthesis,
@@ -41,6 +45,10 @@ import {
   parseQueryAnalysisJson,
   queryAnalysisMessages,
   reportedEvidenceSynthesis,
+  quranTransmissionEvidenceSynthesis,
+  ritualNullifierEvidenceSynthesis,
+  ritualTestimonyEvidenceSynthesis,
+  signsEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
   visualDepictionEvidenceSynthesis,
@@ -561,7 +569,11 @@ function AssistantMessage({ message }) {
             {message.retrievalPhrase?.text || "Retrieving narrations..."}
           </span>
           <TypeLine>
-            {message.results.length
+            {message.followUpMode && message.results.length
+              ? `Retrieved ${message.results.length} additional narrations across ${message.clusterCount || groupNarrationResults(message.results).length} distinct report families.`
+              : message.followUpMode
+                ? "No additional distinct narration was found in the current corpus for this topic."
+                : message.results.length
               ? `Retrieved ${message.results.length} ranked narrations across ${message.clusterCount || groupNarrationResults(message.results).length} distinct report families from ${message.candidateCount} direct candidates${message.expandedCandidateCount ? ` and ${message.expandedCandidateCount - message.candidateCount} corpus-linked candidates` : ""}. Relevance is not a legal verdict.`
               : "No sufficiently close narration was found with the current query and filters."}
           </TypeLine>
@@ -1002,6 +1014,27 @@ export default function LocalHadithChat() {
         const reportedSynthesis = data.results.length && pending?.retrievalProfile?.facet === "reported-evidence"
           ? reportedEvidenceSynthesis(synthesisEvidence)
           : "";
+        const bookReliabilitySynthesis = data.results.length && pending?.retrievalProfile?.facet === "book-reliability"
+          ? bookReliabilityEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const hajjCompanionshipSynthesis = data.results.length && pending?.retrievalProfile?.facet === "hajj-companionship"
+          ? hajjCompanionshipEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const ritualNullifierSynthesis = data.results.length && pending?.retrievalProfile?.facet === "ritual-nullifier"
+          ? ritualNullifierEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const ritualTestimonySynthesis = data.results.length && pending?.retrievalProfile?.facet === "ritual-testimony"
+          ? ritualTestimonyEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const quranTransmissionSynthesis = data.results.length && pending?.retrievalProfile?.facet === "quran-transmission"
+          ? quranTransmissionEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const juristAuthoritySynthesis = data.results.length && pending?.retrievalProfile?.facet === "jurist-authority"
+          ? juristAuthorityEvidenceSynthesis(synthesisEvidence)
+          : "";
+        const signsSynthesis = data.results.length && pending?.retrievalProfile?.facet === "signs-events"
+          ? signsEvidenceSynthesis(synthesisEvidence)
+          : "";
         const lineageMarriageSynthesis = data.results.length && pending?.retrievalProfile?.facet === "lineage-marriage"
           ? lineageMarriageEvidenceSynthesis(synthesisEvidence)
           : "";
@@ -1018,18 +1051,31 @@ export default function LocalHadithChat() {
           && pending?.retrievalProfile?.facet === "overlapping-marriage-contracts"
           ? overlappingMarriageEvidenceSynthesis(synthesisEvidence)
           : "";
-        const sourceSynthesis = methodSynthesis
+        const baseSourceSynthesis = methodSynthesis
           || timeSynthesis
           || definitionSynthesis
           || biographicalSynthesis
           || virtueSynthesis
           || importanceSynthesis
           || reportedSynthesis
+          || bookReliabilitySynthesis
+          || hajjCompanionshipSynthesis
+          || ritualNullifierSynthesis
+          || ritualTestimonySynthesis
+          || quranTransmissionSynthesis
+          || juristAuthoritySynthesis
+          || signsSynthesis
           || contestedLineageMarriageSynthesis
           || lineageMarriageSynthesis
           || visualDepictionSynthesis
           || overlappingMarriageSynthesis
           || legalSynthesis;
+        const followUpSummary = followUpRetrievalSynthesis(
+          pending?.retrievalProfile?.followUpMode,
+          data.results.length,
+          data.clusterCount,
+        );
+        const sourceSynthesis = [followUpSummary, baseSourceSynthesis].filter(Boolean).join("\n\n");
         pendingRef.current.delete(data.requestId);
         setConversations((items) => items.map((conversation) =>
           conversation.id === conversationId
@@ -1047,11 +1093,14 @@ export default function LocalHadithChat() {
                       expandedCandidateCount: data.expandedCandidateCount,
                       clusterCount: data.clusterCount,
                       elapsedMs: data.elapsedMs,
+                      followUpMode: pending?.retrievalProfile?.followUpMode || "",
                       synthesis: data.results.length
                         ? sourceSynthesis
                           ? { loading: false, text: sourceSynthesis, sourceOnly: true }
                           : { loading: true, text: "" }
-                        : null,
+                        : followUpSummary
+                          ? { loading: false, text: followUpSummary, sourceOnly: true }
+                          : null,
                       retrievalPhrase: THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)],
                     }
                   : message),
@@ -1067,7 +1116,7 @@ export default function LocalHadithChat() {
               setConversations((items) => items.map((conversation) =>
                 conversation.id === conversationId
                   ? { ...conversation, messages: conversation.messages.map((message) =>
-                      message.id === data.requestId ? { ...message, synthesis: { loading: false, text: generation.text, modelLabel: generation.modelLabel } } : message) }
+                      message.id === data.requestId ? { ...message, synthesis: { loading: false, text: [followUpSummary, generation.text].filter(Boolean).join("\n\n"), modelLabel: generation.modelLabel } } : message) }
                   : conversation));
             })
             .catch((error) => {
@@ -1075,7 +1124,7 @@ export default function LocalHadithChat() {
                 conversation.id === conversationId
                   ? { ...conversation, messages: conversation.messages.map((message) =>
                       message.id === data.requestId
-                        ? { ...message, synthesis: { loading: false, text: "", error: error instanceof Error ? error.message : "The local model could not synthesize these reports." } }
+                        ? { ...message, synthesis: { loading: false, text: followUpSummary, sourceOnly: Boolean(followUpSummary), error: error instanceof Error ? error.message : "The local model could not synthesize these reports." } }
                         : message) }
                   : conversation));
             });

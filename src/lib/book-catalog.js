@@ -99,9 +99,20 @@ const VERIFIED_BOOKS = [
     author: "Mirza Husayn al-Nuri al-Tabrisi",
     aliases: ["mustadrak al wasail", "mustadrakul wasail"],
   },
+  {
+    title: "Kitab Sulaym ibn Qays",
+    author: "attributed to Sulaym ibn Qays al-Hilali",
+    aliases: ["kitab sulaym", "kitab sulaymn", "book of sulaym", "sulaym ibn qays"],
+  },
+  {
+    title: "Nafs al-Mahmum",
+    author: "Shaykh Abbas al-Qummi",
+    aliases: ["nafs al mahmum", "nafsul mahmoom", "nafs ul mahmum"],
+  },
 ];
 
 const AUTHORSHIP_INTENT = /\b(?:who\s+(?:is|was)\s+(?:the\s+)?(?:author|compiler)|who\s+(?:wrote|compiled)|(?:author|compiler)\s+of|(?:book\s+)?author|written\s+by|wrote|compiled)\b/i;
+const BOOK_ASSESSMENT_INTENT = /\b(?:how\s+(?:good|reliable|authentic|sound|weak)|is\s+(?:the\s+)?(?:book\s+)?(?:reliable|authentic|sound|weak)|reliability|authenticity|grade|grading|assessment)\b/i;
 
 function normalize(value) {
   const normalized = String(value || "")
@@ -168,7 +179,9 @@ function corpusBooks(manifest) {
 
 export function resolveBookAuthorship(query, manifest) {
   const raw = String(query || "").trim();
-  if (!AUTHORSHIP_INTENT.test(raw)) return null;
+  const asksAuthorship = AUTHORSHIP_INTENT.test(raw);
+  const asksAssessment = BOOK_ASSESSMENT_INTENT.test(raw);
+  if (!asksAuthorship && !asksAssessment) return null;
   const normalizedQuery = normalize(raw);
   const external = VERIFIED_BOOKS.map((book) => ({ ...book, source: "verified local bibliography" }));
   const candidates = [...corpusBooks(manifest), ...external]
@@ -195,6 +208,16 @@ export function resolveBookAuthorship(query, manifest) {
   }
 
   const match = candidates[0];
+  if (asksAssessment) {
+    return {
+      intent: "book-info",
+      known: true,
+      title: match.title,
+      author: match.author,
+      source: match.source,
+      text: `${match.title} is ${/^attributed to\b/i.test(match.author) ? match.author : `written or compiled by ${match.author}`}. A bibliography entry cannot establish a blanket authenticity grade for every report in a book; that requires report-by-report chain and text evaluation. Source: ${match.source}.`,
+    };
+  }
   return {
     intent: "book-info",
     known: true,

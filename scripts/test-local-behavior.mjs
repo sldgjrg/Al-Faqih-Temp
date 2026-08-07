@@ -9,16 +9,24 @@ import { cleanCorpusDisplay, cleanCorpusMarkdown } from "../src/lib/corpus-displ
 import {
   appendHadithOffer,
   biographicalEvidenceSynthesis,
+  bookReliabilityEvidenceSynthesis,
   contestedLineageMarriageEvidenceSynthesis,
   conversationMessages,
   definitionEvidenceSynthesis,
+  followUpRetrievalSynthesis,
+  hajjCompanionshipEvidenceSynthesis,
   importanceEvidenceSynthesis,
+  juristAuthorityEvidenceSynthesis,
   legalEvidenceSynthesis,
   lineageMarriageEvidenceSynthesis,
   methodEvidenceSynthesis,
   overlappingMarriageEvidenceSynthesis,
   parseQueryAnalysisJson,
+  quranTransmissionEvidenceSynthesis,
   reportedEvidenceSynthesis,
+  ritualNullifierEvidenceSynthesis,
+  ritualTestimonyEvidenceSynthesis,
+  signsEvidenceSynthesis,
   synthesisMessages,
   timeDefinitionEvidenceSynthesis,
   visualDepictionEvidenceSynthesis,
@@ -737,6 +745,200 @@ assert.doesNotMatch(
   /bathhouse|lime|depilatory|nurah/i,
   "generic work questions must not inherit grooming-provider reports",
 );
+
+const shrimp = await routedSearch("is shrimp halal");
+assert.equal(shrimp.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  shrimp.results[0]?.link.includes("/6/3/12/5"),
+  "a short corpus-anchored food question must take the fast path to the direct shrimp report",
+);
+
+const signs = await routedSearch("gimme all the signs of the reappearance");
+assert.equal(signs.route.retrievalProfile.facet, "signs-events");
+assert.equal(signs.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(hasLink(signs.results, "/8/1/483/1"), "the signs answer must include the five-sign report");
+assert.ok(
+  new Set(signs.results.map((result) => result.evidenceRole).filter((role) => role && role !== "direct")).size >= 4,
+  "an exhaustive signs request must cover distinct evidence roles instead of one long report",
+);
+assert.doesNotMatch(signsEvidenceSynthesis(signs.results), /keep calm|you should/i);
+const signsFollowUp = resolveLocalConversation(
+  "is that all of them",
+  { messages: [{ role: "user", text: "gimme all the signs of the reappearance" }, { role: "assistant", results: signs.results }] },
+  {},
+  manifest,
+);
+assert.equal(signsFollowUp.retrievalProfile.facet, "signs-events");
+assert.equal(signsFollowUp.retrievalProfile.exhaustive, true);
+assert.equal(signsFollowUp.retrievalProfile.followUpMode, "exhaustive-check");
+assert.ok(signsFollowUp.retrievalProfile.excludeResultKeys.includes(String(signs.results[0].link)));
+assert.match(signsFollowUp.synthesisQuery, /signs of the reappearance.*is that all/i);
+const signsContinuation = await search(signsFollowUp.searchQuery, {
+  resultLimit: signsFollowUp.retrievalProfile.resultLimit,
+  retrievalProfile: signsFollowUp.retrievalProfile,
+});
+const initialSignKeys = new Set(signs.results.flatMap((result) => [
+  result.link,
+  String(result.id),
+  String(result.clusterId || ""),
+]));
+assert.ok(
+  signsContinuation.results.every((result) => ![
+    result.link,
+    String(result.id),
+    String(result.clusterId || ""),
+  ].some((key) => key && initialSignKeys.has(key))),
+  "an exhaustive follow-up must not repeat a displayed report or parallel family",
+);
+assert.ok(
+  !hasLink(signsContinuation.results, "/24/2/71/1"),
+  "an Ashura ziyara report must not satisfy a compound Qaim-on-Ashura evidence lane",
+);
+for (const followUp of ["that's it?", "are there any more?", "is this everything?", "only those?"]) {
+  const continued = resolveLocalConversation(
+    followUp,
+    { messages: [{ role: "user", text: "gimme all the signs of the reappearance" }, { role: "assistant", text: "Earlier results" }] },
+    {},
+    manifest,
+  );
+  assert.equal(continued.retrievalProfile.facet, "signs-events", `${followUp} must retain the religious subject`);
+  assert.equal(continued.retrievalProfile.exhaustive, true, `${followUp} must request exhaustive retrieval`);
+}
+
+const bookAssessment = await routedSearch("how good is kitab sulaymn");
+assert.equal(bookAssessment.route.retrievalProfile.facet, "book-reliability");
+assert.equal(bookAssessment.route.retrievalProfile.evidenceOnly, true);
+assert.ok(hasLink(bookAssessment.results, "/27/1/30/11"));
+assert.ok(hasLink(bookAssessment.results, "/22/2/4/8"));
+assert.ok(hasLink(bookAssessment.results, "/22/2/4/30"));
+assert.equal(bookAssessment.results.length, 3);
+assert.deepEqual(
+  bookAssessment.results.map((result) => result.evidenceRole),
+  ["transmitted-validation", "corpus-transmission", "source-reception"],
+);
+assert.ok(!hasLink(bookAssessment.results, "/31/1/1/2"), "book assessment must not append unrelated direct results");
+const bookAssessmentAnswer = bookReliabilityEvidenceSynthesis(bookAssessment.results);
+assert.match(bookAssessmentAnswer, /Sulaym has said the truth|confirms the truth of the particular will/i);
+assert.match(bookAssessmentAnswer, /particular transmission.*not an explicit blanket/is);
+assert.match(bookAssessmentAnswer, /compiler commentary/i);
+assert.match(bookAssessmentAnswer, /important, relied-upon Shia source/i);
+const misspelledBookAssessment = resolveLocalConversation("how authntic is kitab sulaymn ibn qays", { messages: [] }, {}, manifest);
+assert.equal(misspelledBookAssessment.retrievalProfile.facet, "book-reliability");
+const bookPraiseFollowUp = resolveLocalConversation(
+  "is that all of the hadith?",
+  { messages: [{ role: "user", text: "how reliable is kitab sulaymn ibn qays" }, { role: "assistant", text: "Earlier results" }] },
+  {},
+  manifest,
+);
+assert.equal(bookPraiseFollowUp.retrievalProfile.facet, "book-reliability");
+assert.equal(bookPraiseFollowUp.retrievalProfile.exhaustive, true);
+assert.equal(bookPraiseFollowUp.retrievalProfile.followUpMode, "exhaustive-check");
+assert.match(followUpRetrievalSynthesis("exhaustive-check", 0, 0), /^Yes\./);
+assert.match(followUpRetrievalSynthesis("exhaustive-check", 2, 2), /^No\./);
+assert.match(followUpRetrievalSynthesis("more", 0, 0), /earlier set was all/i);
+for (const followUp of [
+  "gimme more ahadith on the matter",
+  "give me more reports on this",
+  "more ahadith",
+  "show me the rest",
+]) {
+  const continued = resolveLocalConversation(
+    followUp,
+    { messages: [{ role: "user", text: "how good is kitab sulaymn" }, { role: "assistant", results: bookAssessment.results }] },
+    {},
+    manifest,
+  );
+  assert.equal(continued.retrievalProfile.followUpMode, "more", `${followUp} must request unseen reports`);
+  assert.equal(continued.retrievalProfile.facet, "book-reliability", `${followUp} must retain the book subject`);
+  assert.equal(continued.searchQuery, bookAssessment.route.searchQuery, `${followUp} must not pollute the retrieval query`);
+}
+
+const womanHajj = await routedSearch("can a woman perform hajj alone");
+assert.equal(womanHajj.route.retrievalProfile.facet, "hajj-companionship");
+assert.equal(womanHajj.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(hasLink(womanHajj.results, "/4/3/44/4"));
+assert.ok(hasLink(womanHajj.results, "/4/3/44/5"));
+assert.doesNotMatch(
+  womanHajj.results.slice(0, 3).map((result) => result.chapter).join(" "),
+  /Ifrad|Qiran|Tamattu/i,
+);
+assert.match(hajjCompanionshipEvidenceSynthesis(womanHajj.results), /safe.*trustworthy|trustworthy.*safe/is);
+const colloquialWomanHajj = await routedSearch("what did imam say about a woman doing hajj with trusty people");
+assert.equal(colloquialWomanHajj.route.retrievalProfile.facet, "hajj-companionship");
+assert.ok(hasLink(colloquialWomanHajj.results, "/4/3/44/5"));
+
+const bandagedWudu = await routedSearch("how do i do wuzu if i got a bandage on my arm");
+assert.equal(bandagedWudu.route.retrievalProfile.facet, "method");
+assert.ok(hasLink(bandagedWudu.results, "/3/1/21/1") || hasLink(bandagedWudu.results, "/3/1/21/2"));
+assert.doesNotMatch(
+  bandagedWudu.results.map((result) => result.chapter).join(" "),
+  /Description of Wudu before Eating Food/i,
+);
+
+const thirdTestimony = await routedSearch("can you recite shahadat as salisah in tashahhud");
+assert.equal(thirdTestimony.route.retrievalProfile.facet, "ritual-testimony");
+assert.equal(thirdTestimony.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(hasLink(thirdTestimony.results, "/3/4/30/2"));
+assert.ok(hasLink(thirdTestimony.results, "/3/4/30/3"));
+assert.ok(hasLink(thirdTestimony.results, "/3/4/30/6"));
+assert.ok(hasLink(thirdTestimony.results, "/3/4/100/1"));
+assert.ok(hasLink(thirdTestimony.results, "/1/4/107/4"));
+assert.ok(hasLink(thirdTestimony.results, "/1/4/111/8"));
+assert.ok(hasLink(thirdTestimony.results, "/29/1/95/14"));
+const thirdTestimonyAnswer = ritualTestimonyEvidenceSynthesis(thirdTestimony.results);
+assert.match(thirdTestimonyAnswer, /In the name of Allah, with Allah/i);
+assert.match(thirdTestimonyAnswer, /tawhid, risalah, and Ali's authority together/i);
+assert.match(thirdTestimonyAnswer, /outside this ritual passage.*not be misquoted/is);
+
+const windInPrayer = await routedSearch("wind during salah");
+assert.equal(windInPrayer.route.retrievalProfile.facet, "ritual-nullifier");
+assert.equal(windInPrayer.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(hasLink(windInPrayer.results, "/29/1/93/12"));
+assert.ok(hasLink(windInPrayer.results, "/3/4/40/3"));
+assert.ok(!hasLink(windInPrayer.results, "/29/1/86/15"), "generic hearing and smell reports must not impersonate the wind-doubt criterion");
+const windAnswer = ritualNullifierEvidenceSynthesis(windInPrayer.results);
+assert.match(windAnswer, /Actual emission invalidates wudu/i);
+assert.match(windAnswer, /certainty.*doubt/is);
+assert.match(windAnswer, /exact 'hear a sound or detect an odor' wording is not present/i);
+assert.doesNotMatch(
+  windInPrayer.results.slice(0, 2).map((result) => `${result.chapter} ${result.text}`).join(" "),
+  /tree.*wind|wind.*tree|weather/i,
+);
+
+const quranTransmission = await routedSearch("was there tahreef of the quran");
+assert.equal(quranTransmission.route.retrievalProfile.facet, "quran-transmission");
+assert.equal(quranTransmission.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(hasLink(quranTransmission.results, "/2/3/14/28"));
+assert.ok(hasLink(quranTransmission.results, "/1/4/35/1"));
+assert.ok(hasLink(quranTransmission.results, "/1/4/40/1"));
+const quranTransmissionAnswer = quranTransmissionEvidenceSynthesis(quranTransmission.results);
+assert.match(quranTransmissionAnswer, /seventeen thousand verses/i);
+assert.match(quranTransmissionAnswer, /Mushaf Fāṭimah therefore cannot be presented.*removed/is);
+assert.match(quranTransmissionAnswer, /do not.*formulate.*nothing was added/is);
+
+const juristAuthority = await routedSearch("what about wilayat al faqih");
+assert.equal(juristAuthority.route.retrievalProfile.facet, "jurist-authority");
+assert.equal(juristAuthority.route.retrievalProfile.needsQueryAnalysis, false);
+assert.ok(
+  hasLink(juristAuthority.results, "/1/2/21/10") || hasLink(juristAuthority.results, "/7/6/8/5"),
+  "jurist authority must include the Umar ibn Hanzala dispute-adjudication report",
+);
+assert.ok(hasLink(juristAuthority.results, "/7/6/8/4"));
+assert.ok(hasLink(juristAuthority.results, "/27/1/37/3"));
+assert.ok(hasLink(juristAuthority.results, "/1/2/19/1"));
+const juristAuthorityAnswer = juristAuthorityEvidenceSynthesis(juristAuthority.results);
+assert.match(juristAuthorityAnswer, /disputes and adjudication/i);
+assert.match(juristAuthorityAnswer, /not interchangeable propositions/i);
+assert.match(juristAuthorityAnswer, /mixed truth and falsehood/i);
+assert.doesNotMatch(juristAuthorityAnswer, /therefore.*(?:true|false|haram|invalid)/i);
+
+const narratorSovereignty = resolveLocalConversation(
+  "does the narrators are my proof report mean total political sovereignty",
+  { messages: [] },
+  {},
+  manifest,
+);
+assert.equal(narratorSovereignty.retrievalProfile.facet, "jurist-authority");
 
 const syntheticResults = Array.from({ length: 10 }, (_, index) => ({
   id: index,

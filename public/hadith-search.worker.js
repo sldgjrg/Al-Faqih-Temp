@@ -400,6 +400,33 @@ function hasMethodSubject(result, terms = []) {
   });
 }
 
+function resultIdentityKeys(result = {}) {
+  return [result.link, result.id, result.clusterId]
+    .filter((value) => value !== undefined && value !== null && String(value))
+    .map(String);
+}
+
+function matchesRequiredPhraseGroups(text, groups = [], maximumWindow = 0) {
+  if (!Array.isArray(groups) || !groups.length) return true;
+  const normalizedText = normalizeText(text || "");
+  const positionsByGroup = groups.map((alternatives) => {
+    const phrases = Array.isArray(alternatives) ? alternatives : [alternatives];
+    return phrases.flatMap((phrase) => {
+      const normalizedPhrase = normalizeText(phrase || "");
+      if (!normalizedPhrase) return [];
+      const positions = [];
+      for (let index = normalizedText.indexOf(normalizedPhrase); index >= 0; index = normalizedText.indexOf(normalizedPhrase, index + 1)) {
+        positions.push(index);
+      }
+      return positions;
+    });
+  });
+  if (positionsByGroup.some((positions) => !positions.length)) return false;
+  if (!maximumWindow || positionsByGroup.length < 2) return true;
+  return positionsByGroup[0].some((anchor) => positionsByGroup.slice(1)
+    .every((positions) => positions.some((position) => Math.abs(position - anchor) <= maximumWindow)));
+}
+
 function neighbouringMethodCandidates(seedResults, candidates) {
   if (!chapterDocuments || !seedResults.length) return [];
   const existing = new Set(candidates.map((candidate) => candidate.id));
@@ -673,6 +700,14 @@ async function search({ requestId, query, filters, retrievalProfile }) {
   const parsed = parseInlineFilters(query, filters);
   self.postMessage({ type: "status", requestId, message: "Finding the closest narration passages" });
   const started = performance.now();
+  const excludedResultKeys = new Set(
+    (Array.isArray(retrievalProfile?.excludeResultKeys) ? retrievalProfile.excludeResultKeys : []).map(String),
+  );
+  const isExcluded = (result) => resultIdentityKeys(result).some((key) => excludedResultKeys.has(key));
+  const displayResultLimit = Math.max(2, Math.min(24, Number(retrievalProfile?.resultLimit) || 10));
+  const workingResultLimit = excludedResultKeys.size
+    ? Math.max(displayResultLimit, Math.min(32, displayResultLimit + Math.ceil(excludedResultKeys.size / 2) + 6))
+    : displayResultLimit;
   const { plan, candidates } = rankPassageCandidates({
     manifest,
     passageHashes,
@@ -685,6 +720,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     limit: Math.max(120, Math.min(480, Number(retrievalProfile?.candidateLimit) || 300)),
   });
   if (!candidates.length && retrievalProfile?.rewritten && !retrievalProfile?.relaxed
+    && !retrievalProfile?.evidenceOnly && !retrievalProfile?.followUpMode
     && plan.subjectSourceGroups?.some((group) => group.hashes.size > 0)) {
     self.postMessage({
       type: "status",
@@ -711,7 +747,8 @@ async function search({ requestId, query, filters, retrievalProfile }) {
       },
     });
   }
-  if (!candidates.length && !retrievalProfile?.rewritten) {
+  if (!candidates.length && !retrievalProfile?.rewritten
+    && !retrievalProfile?.evidenceOnly && !retrievalProfile?.followUpMode) {
     self.postMessage({
       type: "rewrite-needed",
       requestId,
@@ -769,8 +806,9 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     plan,
     candidates: expandedCandidates,
     records,
-    resultLimit: Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)),
-  }).map((result) => ({ ...result, evidenceRole: "direct" }));
+    resultLimit: workingResultLimit,
+  }).map((result) => ({ ...result, evidenceRole: "direct" }))
+    .filter((result) => !isExcluded(result));
   if (retrievalProfile?.expandMethodContext) {
     const procedureCandidates = expandedCandidates
       .filter((candidate) => hasMethodSubject({ text: records.get(candidate.id) || "" }, retrievalProfile?.methodSubjectTerms)
@@ -803,7 +841,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         if (seenContext.has(key)) return false;
         seenContext.add(key);
         return true;
-      }).slice(0, Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)));
+      }).filter((result) => !isExcluded(result)).slice(0, displayResultLimit);
     }
   }
   const secondaryQueries = [
@@ -816,15 +854,21 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     const dynamicEvidenceRoles = [...(retrievalProfile?.evidenceRoles || [])];
     const dynamicSubjectGroups = [...(retrievalProfile?.evidenceQuerySubjects || [])];
     const dynamicLiteralAnchors = [...(retrievalProfile?.evidenceQueryLiteralAnchors || [])];
+    const dynamicRequiredPhraseGroups = [...(retrievalProfile?.evidenceQueryRequiredPhraseGroups || [])];
+    const dynamicRequiredPhraseWindows = [...(retrievalProfile?.evidenceQueryRequiredPhraseWindows || [])];
     while (dynamicLiteralAnchors.length < plannedSecondaryCount) dynamicLiteralAnchors.push([]);
+    while (dynamicRequiredPhraseGroups.length < plannedSecondaryCount) dynamicRequiredPhraseGroups.push([]);
+    while (dynamicRequiredPhraseWindows.length < plannedSecondaryCount) dynamicRequiredPhraseWindows.push(0);
     const isTimingEvidence = retrievalProfile?.facet === "time-definition";
     const isBiographicalEvidence = retrievalProfile?.facet === "biographical-event";
     const isReportedEvidence = retrievalProfile?.facet === "reported-evidence";
-    for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
+    const rankSecondaryQuery = (queryIndex) => {
       const secondaryQuery = secondaryQueries[queryIndex];
       const evidenceRole = dynamicEvidenceRoles[queryIndex] || "supporting";
       const requiredSubjects = dynamicSubjectGroups[queryIndex] || [];
       const requiredLiteralAnchors = dynamicLiteralAnchors[queryIndex] || [];
+      const requiredPhraseGroups = dynamicRequiredPhraseGroups[queryIndex] || [];
+      const requiredPhraseWindow = Number(dynamicRequiredPhraseWindows[queryIndex]) || 0;
       const secondaryProfile = {
         ...retrievalProfile,
         secondaryQuery: "",
@@ -846,9 +890,10 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         subjectTermGroups: requiredSubjects.length ? requiredSubjects : (isTimingEvidence ? [] : [secondaryQuery]),
         minimumSubjectCoverage: isReportedEvidence || retrievalProfile?.semanticGlossExpansion ? 1 : 0.5,
         allowFullRecordSubjectMatch: !isReportedEvidence || queryIndex < plannedSecondaryCount,
-        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence ? false : true,
+        requireFocusCoverage: isTimingEvidence || isBiographicalEvidence || isReportedEvidence
+          || retrievalProfile?.deterministicEvidence ? false : true,
         minimumFocusCoverage: 0.34,
-        disableFocus: isBiographicalEvidence || isReportedEvidence,
+        disableFocus: isBiographicalEvidence || isReportedEvidence || retrievalProfile?.deterministicEvidence,
         requireFocusFacetProximity: false,
         // A named person can appear under a kunya, epithet, or a different
         // transliteration in the chapter heading. The supplemental query
@@ -878,21 +923,60 @@ async function search({ requestId, query, filters, retrievalProfile }) {
         retrievalProfile: secondaryProfile,
         limit: Math.max(120, Math.min(360, Number(retrievalProfile?.candidateLimit) || 240)),
       });
+      return {
+        secondaryQuery,
+        evidenceRole,
+        requiredSubjects,
+        requiredLiteralAnchors,
+        requiredPhraseGroups,
+        requiredPhraseWindow,
+        secondaryRanked,
+      };
+    };
+    // Deterministic evidence lanes are independent. Rank them first and load
+    // the union of their corpus shards once instead of waiting for the same
+    // IndexedDB/network packs lane by lane. Reported-evidence feedback stays
+    // sequential because its later query is derived from the first result.
+    const preRankedSecondary = isReportedEvidence
+      ? []
+      : secondaryQueries.map((_, queryIndex) => rankSecondaryQuery(queryIndex));
+    const preRankedCandidates = preRankedSecondary.flatMap((entry) => entry.secondaryRanked.candidates);
+    const sharedSecondaryRecords = preRankedCandidates.length
+      ? await loadCandidateRecords(preRankedCandidates)
+      : null;
+    for (let queryIndex = 0; queryIndex < secondaryQueries.length; queryIndex += 1) {
+      const {
+        secondaryQuery,
+        evidenceRole,
+        requiredSubjects,
+        requiredLiteralAnchors,
+        requiredPhraseGroups,
+        requiredPhraseWindow,
+        secondaryRanked,
+      } = preRankedSecondary[queryIndex] || rankSecondaryQuery(queryIndex);
       if (!secondaryRanked.candidates.length) continue;
-      const secondaryRecords = await loadCandidateRecords(secondaryRanked.candidates);
+      const secondaryRecords = sharedSecondaryRecords || await loadCandidateRecords(secondaryRanked.candidates);
+      // Literal anchors identify corpus-native wording (a transmitter name,
+      // technical phrase, and so on). Apply them before the small final
+      // rerank bucket is cut; filtering afterward can permanently discard the
+      // exact report even when it was present in the passage candidates.
+      const anchoredCandidates = secondaryRanked.candidates.filter((candidate) => {
+        const recordText = secondaryRecords.get(candidate.id) || "";
+        if (requiredLiteralAnchors.length) {
+          const literalTokens = new Set(normalizeText(recordText).split(/\s+/));
+          if (!requiredLiteralAnchors.some((anchor) => literalTokens.has(normalizeText(anchor)))) return false;
+        }
+        return matchesRequiredPhraseGroups(recordText, requiredPhraseGroups, requiredPhraseWindow);
+      });
       let supplementalBucket = rerankLoadedRecords({
         manifest,
         plan: secondaryRanked.plan,
-        candidates: secondaryRanked.candidates,
+        candidates: anchoredCandidates,
         records: secondaryRecords,
-        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence || isReportedEvidence ? 8 : 5,
-      }).map((result) => ({ ...result, evidenceRole }));
-      if (requiredLiteralAnchors.length) {
-        supplementalBucket = supplementalBucket.filter((result) => {
-          const literalTokens = new Set(normalizeText(`${result.title} ${result.chapter} ${result.text}`).split(/\s+/));
-          return requiredLiteralAnchors.some((anchor) => literalTokens.has(anchor));
-        });
-      }
+        resultLimit: isTimingEvidence || retrievalProfile?.facet === "definition" || isBiographicalEvidence
+          || isReportedEvidence || retrievalProfile?.deterministicEvidence ? 8 : 5,
+      }).map((result) => ({ ...result, evidenceRole }))
+        .filter((result) => !isExcluded(result));
       supplementalBuckets.push(supplementalBucket);
       // Use a high-confidence result heading as corpus-native relevance
       // feedback. This discovers translation variants used by other reports
@@ -907,6 +991,8 @@ async function search({ requestId, query, filters, retrievalProfile }) {
           dynamicEvidenceRoles.push(evidenceRole);
           dynamicSubjectGroups.push(feedback.subjectGroups);
           dynamicLiteralAnchors.push(feedback.literalAnchors);
+          dynamicRequiredPhraseGroups.push([]);
+          dynamicRequiredPhraseWindows.push(0);
         }
       }
     }
@@ -934,11 +1020,12 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     const seenSupplemental = new Set();
     let promotedSupplemental = supplementalResults.filter((result) => {
       const key = result.link || result.id;
-      if (seenSupplemental.has(key)) return false;
+      if (seenSupplemental.has(key) || isExcluded(result)) return false;
       seenSupplemental.add(key);
       return true;
     }).slice(0, Math.max(1, Math.min(
-      retrievalProfile?.facet === "biographical-event" || retrievalProfile?.facet === "reported-evidence" ? 10 : 6,
+      retrievalProfile?.facet === "biographical-event" || retrievalProfile?.facet === "reported-evidence"
+        || retrievalProfile?.deterministicEvidence ? 10 : 6,
       Number(retrievalProfile?.secondaryPromotionLimit) || 3,
     )));
     if (retrievalProfile?.onePerEvidenceRole) {
@@ -951,14 +1038,19 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     // original wording.  The old global `seen` filter silently discarded that
     // stronger supplemental ranking, leaving loosely related reports ahead of
     // the answer-bearing narration.
-    results = [
-      ...promotedSupplemental,
-      ...(usedReportedFeedback && promotedSupplemental.length
-        ? []
-        : results.filter((result) => !promotedKeys.has(result.link || result.id))),
-    ].slice(0, Math.max(2, Math.min(14, Number(retrievalProfile?.resultLimit) || 10)));
+    results = (retrievalProfile?.evidenceOnly
+      ? promotedSupplemental
+      : [
+          ...promotedSupplemental,
+          ...(usedReportedFeedback && promotedSupplemental.length
+            ? []
+            : results.filter((result) => !promotedKeys.has(result.link || result.id))),
+        ]).filter((result) => !isExcluded(result)).slice(0, displayResultLimit);
   }
-  if (!results.length && !retrievalProfile?.rewritten) {
+  if (retrievalProfile?.evidenceOnly && !secondaryQueries.length) results = [];
+  results = results.filter((result) => !isExcluded(result)).slice(0, displayResultLimit);
+  if (!results.length && !retrievalProfile?.rewritten
+    && !retrievalProfile?.evidenceOnly && !retrievalProfile?.followUpMode) {
     self.postMessage({
       type: "rewrite-needed",
       requestId,
@@ -970,6 +1062,7 @@ async function search({ requestId, query, filters, retrievalProfile }) {
     return;
   }
   if (!results.length && retrievalProfile?.rewritten && !retrievalProfile?.relaxed
+    && !retrievalProfile?.evidenceOnly && !retrievalProfile?.followUpMode
     && plan.subjectSourceGroups?.some((group) => group.hashes.size > 0)) {
     self.postMessage({
       type: "status",

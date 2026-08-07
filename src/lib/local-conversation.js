@@ -2,7 +2,7 @@ import { resolveBookAuthorship } from "./book-catalog.js";
 import { cleanCorpusDisplay } from "./corpus-display.js";
 
 const ENGLISH_STOP_WORDS = new Set(
-  "a about an and are as at be been can concerning could did do does for from had has have how i if in into is it may me must my narrated of on or please regarding related reported said should tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
+  "a about an and are as at be been can concerning could did do does for from get gets getting got had has have how i if in into is it may me must my narrated of on or please regarding related reported said should tell that the their them then this to us was we what when where which who why will with would you your".split(" "),
 );
 
 const GENERIC_QUERY_WORDS = new Set(
@@ -20,13 +20,20 @@ const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
   akhlaq: "character",
   akhirah: "hereafter",
   barzakh: "intermediate realm",
+  bandage: "bandage wound",
+  bandages: "bandage wound",
   dua: "supplication",
   fajr: "dawn",
   ghair: "non",
   ghusl: "ritual bath",
   hayat: "life",
+  hajj: "pilgrimage",
   ilm: "knowledge",
   imamah: "leadership",
+  faqih: "jurist",
+  fuqaha: "jurists",
+  mahram: "guardian close relative",
+  namaz: "prayer",
   najasah: "impurity",
   najis: "impure",
   nikah: "marriage",
@@ -50,6 +57,14 @@ const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
   salah: "prayer",
   salat: "prayer",
   sawm: "fasting",
+  shahadat: "testimony",
+  shahadah: "testimony",
+  salisah: "third",
+  salisa: "third",
+  sulaymn: "Sulaym",
+  tahreef: "alteration omission distortion",
+  tahrif: "alteration omission distortion",
+  tashahhud: "testimonies prayer",
   taqwa: "piety",
   taharah: "purity",
   tawhid: "oneness",
@@ -57,6 +72,9 @@ const ROMAN_ARABIC_GLOSSES = new Map(Object.entries({
   wilayah: "authority",
   wiladah: "birth",
   wilayat: "authority",
+  wudu: "wudu",
+  wudhu: "wudu",
+  wuzu: "wudu",
   zakat: "alms",
 }));
 
@@ -116,6 +134,14 @@ const RELIGIOUS_DOMAIN = /\b(?:ahl(?:ul| al)[-\s]?bayt|allah|islam(?:ic)?|shia|s
 const RELIGIOUS_SCRIPT_DOMAIN = /(?:الله|الإسلام|اسلام|الشيعة|شیعہ|أهل البيت|اہل بیت|إمام|امام|القرآن|قرآن|حديث|حدیث|رواية|روایت|توحيد|توحید|إمامة|امامت|ولاية|ولایت|رجعة|رجعت|بداء|برزخ|قيامة|قیامت|تقليد|تقلید|اجتهاد|فقه|حلال|حرام|واجب|مستحب|مكروه|زكاة|زکات|خمس|حج|عمرة|نماز|صلاة|صوم|نكاح|نکاح|طلاق)/u;
 
 const RELIGIOUS_FOLLOW_UP = /^(?:(?:no|nah|yes|yeah|okay|ok|please)\s+)*(?:now\s+)?(?:find|show|give|bring|search(?:\s+for)?|cite|source)\s+(?:(?:me|us)\s+)?(?:(?:the|those|some|any)\s+)?(?:hadith|ahadith|narration|narrations|riwaya|riwayat|reports?|sources?)(?:\s+(?:on|about|for|it|that|this|them))?[.!?]*$/i;
+const RELIGIOUS_ANAPHORIC_FOLLOW_UP = /^(?:(?:no|nah|yes|yeah|okay|ok|please|wait)\s+)*(?:(?:is|was)\s+(?:that|this)\s+(?:all|everything)(?:\s+(?:of\s+(?:them|the\s+(?:hadith|ahadith|reports?|narrations?))|there\s+is))?|are\s+(?:those|these)\s+(?:all|everything)(?:\s+of\s+them)?|are\s+there\s+any\s+(?:more|others?)|that(?:'s|\s+is)?\s+it|only\s+(?:these|those|that|this)(?:\s+ones?)?|any\s+(?:more|others?)(?:\s+(?:on|about)\s+(?:that|this|it|them))?|what\s+(?:else|about\s+(?:the\s+)?others?)|more(?:\s+(?:hadith|ahadith|narrations?|reports?|ones?))?|all\s+of\s+them|show\s+(?:me\s+)?(?:the\s+)?rest|(?:give|show)\s+(?:me\s+)?(?:any\s+)?others?)[.!?]*$/i;
+const EXHAUSTIVE_CHECK_FOLLOW_UP = /^(?:(?:okay|ok|wait|so|but|and)\s+)*(?:(?:is|was)\s+(?:that|this)\s+(?:all|everything)(?:\s+(?:of\s+(?:them|the\s+(?:hadith|ahadith|reports?|narrations?))|there\s+is|you\s+(?:have|found|can\s+find)))?|are\s+(?:those|these)\s+(?:all|everything)(?:\s+of\s+them)?|(?:are|is)\s+there\s+any\s+more(?:\s+(?:hadith|ahadith|reports?|narrations?))?|any\s+more\??|only\s+(?:these|those|that|this)(?:\s+ones?)?|that(?:'s|\s+is)?\s+it|(?:was|is)\s+that\s+it|all\s+of\s+them)[.!?]*$/i;
+const MORE_NARRATIONS_FOLLOW_UP = /^(?:(?:okay|ok|yes|yeah|please|now|then|also|and|but)\s+)*(?:(?:give|gimme|show|find|bring|fetch|cite|list)\s+(?:(?:me|us)\s+)?(?:(?:some|any|the)\s+)?(?:more|additional|other|remaining)(?:\s+(?:hadith|ahadith|narrations?|riwaya|riwayat|reports?|sources?|ones?))?(?:\s+(?:on|about|for|regarding)\s+(?:the\s+)?(?:matter|topic|subject|this|that|it|them))?|(?:more|additional|other)\s+(?:hadith|ahadith|narrations?|riwaya|riwayat|reports?|sources?|ones?)(?:\s+(?:on|about|for|regarding)\s+(?:the\s+)?(?:matter|topic|subject|this|that|it|them))?|show\s+(?:(?:me|us)\s+)?(?:the\s+)?rest|what\s+else|any\s+(?:more|others?)(?:\s+(?:on|about|for|regarding)\s+(?:the\s+)?(?:matter|topic|subject|this|that|it|them))?)[.!?]*$/i;
+const EXHAUSTIVE_QUERY = /\b(?:all|every|everything|complete|comprehensive|exhaustive|any\s+(?:more|others?)|what\s+else|the\s+rest|that(?:'s|\s+is)?\s+it|only\s+(?:these|those)|is\s+(?:that|this)\s+(?:all|everything)|are\s+(?:those|these)\s+all|are\s+there\s+any\s+more)\b/i;
+const BOOK_RELIABILITY_QUERY = /^(?=[\s\S]{0,240}$)(?=[\s\S]*\b(?:book|kitab|collection)\b)(?=[\s\S]*\b(?:good|reliab\w*|auth\w*|sound(?:ness)?|weak(?:ness)?|early|earliest|old|oldest|important|accept\w*|grad\w*|assess\w*|status|reception|prais\w*)\b)[\s\S]*$/i;
+const BOOK_ASSESSMENT_STOP_WORDS = new Set(
+  "good reliable reliability authentic authenticity sound soundness weak weakness early earliest old oldest important accepted acceptance grading grade assessment status reception praised praise collection source sources most one among have really very".split(" "),
+);
 
 // Practical questions are often written as fragments ("X happened what to
 // do") rather than grammatical permission questions.  Preserve that relation
@@ -429,6 +455,321 @@ const RETRIEVAL_FACETS = [
     relatedFloorRatio: 0.3,
   },
   {
+    // Reliability questions about a named hadith book should retrieve the
+    // corpus's reception evidence rather than receive a bibliography-only
+    // verdict. The actual book title is extracted from the user's wording and
+    // composed into generic validation, transmission and reception lanes.
+    name: "book-reliability",
+    pattern: BOOK_RELIABILITY_QUERY,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["book", "narrated", "Imam", "truth", "source", "reliable"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceOnly: true,
+    resultLimit: 7,
+    maxDirectResults: 4,
+    maxFamilyMembers: 3,
+    maxPerChapter: 4,
+    minUniqueResults: 3,
+    maxUniqueResults: 7,
+    candidateLimit: 200,
+    expandedLimit: 320,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 7,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.3,
+    relatedFloorRatio: 0.22,
+  },
+  {
+    // "Alone" in a travel question describes companionship, not a type or
+    // method of Hajj.  Keep safety, guardian and trustworthy-company reports
+    // in distinct lanes so a procedural Hajj chapter cannot answer instead.
+    name: "hajj-companionship",
+    pattern: /\b(?=.*\b(?:woman|female|wife|lady)\b)(?=.*\b(?:hajj|pilgrimage)\b)(?=.*\b(?:alone|herself|without|guardian|mahram|companion|company|safe|safety|travel|trusty|trusted|trustworthy|reliable)\b).*$/i,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["woman", "Hajj", "guardian", "safe", "trustworthy people"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "without-guardian-safety",
+        query: "woman Hajj without guardians safe",
+        subjects: ["woman Hajj guardian", "woman Hajj safe"],
+        literalAnchors: ["safe"],
+      },
+      {
+        role: "trustworthy-company",
+        query: "woman perform Hajj goes with trustworthy people",
+        subjects: ["woman Hajj trustworthy people"],
+        literalAnchors: ["trustworthy"],
+      },
+      {
+        role: "guardian-expense-context",
+        query: "woman goes out people other than guardian husband son brother Hajj expenses",
+        subjects: ["woman guardian Hajj"],
+        literalAnchors: ["guardian"],
+      },
+    ],
+    resultLimit: 5,
+    maxDirectResults: 4,
+    maxFamilyMembers: 3,
+    maxPerChapter: 5,
+    minUniqueResults: 3,
+    maxUniqueResults: 6,
+    candidateLimit: 160,
+    expandedLimit: 260,
+    seedLimit: 10,
+    seedCount: 5,
+    disableFocus: true,
+    secondaryPromotionLimit: 6,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.34,
+    relatedFloorRatio: 0.26,
+  },
+  {
+    // In a prayer/ablution context, ordinary English "wind" normally means
+    // emitted gas.  It must not be expanded to weather, trees or dust.
+    name: "ritual-nullifier",
+    pattern: /\b(?=.*\b(?:wind|gas|flatulence|fart(?:ed|ing)?|break\s+wind)\b)(?=.*\b(?:prayer|pray|salah|salat|namaz|wudu|wudhu|wuzu|ablution)\b).*$/i,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["prayer", "wind", "flatulence", "breaks wudu"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "prayer-nullifier",
+        query: "prayer broken by wind flatulence comes out breaks wudu",
+        subjects: ["prayer wind flatulence"],
+        literalAnchors: ["flatulence"],
+      },
+      {
+        role: "ablution-nullifier",
+        query: "invalidates ablution defecating urination farting sleeping",
+        subjects: ["ablution farting"],
+        literalAnchors: ["farting"],
+      },
+      {
+        // This lane will also begin returning the familiar sound/odor report
+        // automatically when a newly imported collection contains it.
+        role: "sensory-certainty",
+        query: "doubt passed wind remain prayer until hear sound smell odor",
+        subjects: ["wind flatulence fart prayer hear sound smell odor"],
+        literalAnchors: [],
+      },
+      {
+        role: "certainty-not-doubt",
+        query: "certainty not destroyed by doubt complete based on certainty",
+        subjects: ["certainty doubt"],
+        literalAnchors: ["certainty"],
+      },
+    ],
+    resultLimit: 6,
+    maxDirectResults: 3,
+    maxFamilyMembers: 3,
+    maxPerChapter: 3,
+    minUniqueResults: 3,
+    maxUniqueResults: 6,
+    candidateLimit: 180,
+    expandedLimit: 280,
+    seedLimit: 8,
+    seedCount: 4,
+    disableFocus: true,
+    secondaryPromotionLimit: 6,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.34,
+    relatedFloorRatio: 0.26,
+  },
+  {
+    // A question about wording inside tashahhud asks for the transmitted
+    // scope and minimum of that ritual wording.  The verb "recite" alone
+    // must not send it through the generic method retriever.
+    name: "ritual-testimony",
+    pattern: /\b(?=.*\b(?:tashahhud|tashahud|testimon(?:y|ies)|shahad(?:a|ah|at)|shahadat)\b)(?=.*\b(?:third|salisah|salisa|thalitha|ali|wilayah|wilayat|prayer|salah|salat)\b).*$/i,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["Tashahhud", "testimonies", "say", "minimum", "prayer"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "wording-scope",
+        query: "what should say Tashahhud best know not definite",
+        subjects: ["say Tashahhud"],
+        literalAnchors: ["tashahhud"],
+      },
+      {
+        role: "minimum-wording",
+        query: "minimum sufficient Tashahhud two testimonies belief",
+        subjects: ["minimum Tashahhud testimonies"],
+        literalAnchors: ["testimonies"],
+      },
+      {
+        role: "prayer-boundary",
+        query: "whatever say Allah Holy prophet prayer peace virtuous servants ended",
+        subjects: ["Allah Holy prophet prayer"],
+        literalAnchors: ["prayer"],
+      },
+      {
+        role: "prophetic-tashahhud",
+        query: "inspired say name Allah help Allah beautiful names belong Allah compensation Muhammad family Tashahhud",
+        subjects: ["beautiful names Allah"],
+        literalAnchors: ["inspired"],
+      },
+      {
+        role: "primordial-testimony",
+        query: "offspring Adam testified Muhammad messenger Ali Amir al Muminin",
+        subjects: ["offspring Adam Muhammad Ali"],
+        literalAnchors: ["offspring"],
+      },
+      {
+        role: "creation-proclamation",
+        query: "created heavens earth announcer proclaim testify Muhammad Messenger Ali Amir three times",
+        subjects: ["announcer Muhammad Ali"],
+        literalAnchors: ["announcer"],
+      },
+      {
+        role: "inscribed-testimony",
+        query: "crown three lines no god Allah Muhammad Messenger Ali Friend Allah",
+        subjects: ["crown Muhammad Ali"],
+        literalAnchors: ["crown"],
+      },
+    ],
+    resultLimit: 9,
+    maxDirectResults: 5,
+    maxFamilyMembers: 3,
+    maxPerChapter: 5,
+    minUniqueResults: 6,
+    maxUniqueResults: 9,
+    candidateLimit: 220,
+    expandedLimit: 340,
+    seedLimit: 14,
+    seedCount: 7,
+    disableFocus: true,
+    secondaryPromotionLimit: 9,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.34,
+    relatedFloorRatio: 0.26,
+  },
+  {
+    // "Tahrif" is a claim about Qur'an transmission.  Retrieve separately
+    // what each report actually bears on: extent, collection, and the status
+    // of Mushaf Fatimah.  The latter reports expressly distinguish that book
+    // from the Qur'an and therefore must not be presented as omitted Qur'an.
+    name: "quran-transmission",
+    pattern: /\b(?=.*\bqur['a]?n\b)(?=.*\b(?:tahreef|tahrif|alter(?:ed|ation)?|chang(?:ed|ing)|distort(?:ed|ion)?|corrupt(?:ed|ion)?|omit(?:ted|ssion)?|remov(?:ed|al)|add(?:ed|ition)?|missing|preserv(?:ed|ation)|compiled|collected|mushaf)\b).*$/i,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["Quran", "revealed", "collected", "verses", "Mushaf Fatima"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "reported-extent",
+        query: "Quran Gabriel Muhammad seventeen thousand verses",
+        subjects: ["Quran seventeen thousand verses"],
+        literalAnchors: ["seventeen"],
+      },
+      {
+        role: "collection-as-revealed",
+        query: "collected whole Quran as it was revealed Ali Imams preserved",
+        subjects: ["whole Quran as revealed"],
+        literalAnchors: ["revealed"],
+      },
+      {
+        role: "mushaf-not-quran",
+        query: "Mushaf Fatima three times bigger not single letter Quran",
+        subjects: ["Mushaf Fatima Quran"],
+        literalAnchors: ["mushaf"],
+      },
+      {
+        role: "mushaf-content",
+        query: "heretics Mushaf Fatima angel grief solace Ali wrote",
+        subjects: ["angel grief"],
+        literalAnchors: ["heretics"],
+      },
+    ],
+    resultLimit: 7,
+    maxDirectResults: 5,
+    maxFamilyMembers: 3,
+    maxPerChapter: 4,
+    minUniqueResults: 4,
+    maxUniqueResults: 8,
+    candidateLimit: 180,
+    expandedLimit: 300,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.72,
+    directFloorRatio: 0.32,
+    relatedFloorRatio: 0.24,
+  },
+  {
+    // Match the doctrine phrase as a relation (jurist + delegated authority),
+    // never the common occurrence of "al-Faqih" inside a person's name.
+    // Adjudication, referral during occultation, and divinely designated
+    // authority remain separate evidence scopes.
+    name: "jurist-authority",
+    pattern: /\b(?:wilayat|wilayah|walayat|walayah)\s+(?:al|ul|e|of\s+the)?[-\s]*(?:faqih|jurist)|\b(?:authority|rule|government|guardianship|sovereignty)\s+of\s+(?:the\s+)?(?:faqih|jurist)|\b(?:faqih|jurist)\s+(?:rule|government|authority|guardianship|sovereignty)\b|\b(?:narrators?|transmitters?)\b.{0,72}\b(?:proofs?|hujjah|hujja)\b.{0,72}\b(?:political|government|sovereignty|authority|rule)\b/i,
+    scriptPattern: /$^/u,
+    strict: false,
+    terms: ["jurist", "judge", "ruler", "narrators traditions", "Divine authority"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "dispute-adjudication",
+        query: "Umar ibn Hanzalah dispute inheritance judge ruler",
+        subjects: ["dispute inheritance"],
+        literalAnchors: ["hanzalah"],
+      },
+      {
+        role: "appointed-judge",
+        query: "avoid people injustice knows our judgment appoint judge adjudication",
+        subjects: ["knows our judgment judge"],
+        literalAnchors: ["judge"],
+      },
+      {
+        role: "occultation-referral",
+        query: "problems occur future refer narrators our traditions proofs over you",
+        subjects: ["narrators our traditions proofs"],
+        literalAnchors: ["narrators"],
+      },
+      {
+        role: "divine-authority-scope",
+        query: "earth not without Leader Divine Authority over creatures hidden Imam",
+        subjects: ["Divine Authority creatures Leader"],
+        literalAnchors: ["authority"],
+      },
+      {
+        role: "mixed-truth-authority-warning",
+        query: "mischief begins following desires obeying invented rules different book Allah people yield other people high authority falsehood clear truth distinct mix",
+        subjects: ["mischief desires invented rules high authority"],
+        literalAnchors: ["mischief"],
+      },
+    ],
+    resultLimit: 8,
+    maxDirectResults: 5,
+    maxFamilyMembers: 3,
+    maxPerChapter: 4,
+    minUniqueResults: 5,
+    maxUniqueResults: 8,
+    candidateLimit: 180,
+    expandedLimit: 300,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.32,
+    relatedFloorRatio: 0.24,
+  },
+  {
     name: "appearance",
     pattern: /\b(?:what\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look\s+like|how\s+(?:does|did|will)\s+(?:imam|the\s+imam|mahdi|the\s+mahdi|qaim|the\s+qaim|he)\s+look|look(?:s|ed)?\s+like|physical\s+(?:appearance|description|features?)|describe\s+(?:his|the\s+imam(?:'s)?|imam\s+mahdi(?:'s)?|al[-\s]?mahdi(?:'s)?|al[-\s]?qaim(?:'s)?)\s+(?:appearance|features?|face|body)|appearance\s+of\s+(?:imam|the\s+imam|imam\s+mahdi|mahdi|the\s+mahdi|al[-\s]?qaim|the\s+qaim)|features?|complexion|forehead|eyebrows?|eyes?|nose|cheeks?|mole|beard|hair|curly|wavy|stature|height|build|shoulders?|young-looking|age appearance)\b/i,
     scriptPattern: /(?:كيف يبدو|صفته|صفاته|حليته|حليته|شكله|وجهه|لونه|جبهته|حاجبه|عينيه|انفه|خده|خال|لحيته|شعره|جعد|قامته|منكبيه)/u,
@@ -545,12 +886,58 @@ const RETRIEVAL_FACETS = [
     pattern: /\b(?:signs?|before\s+(?:the\s+)?(?:appearance|reappearance|rise)|when\s+will|emergence|reappearance|advent|sufyani|dajjal|yamani)\b/i,
     scriptPattern: /(?:علامات|قبل الظهور|الظهور|الخروج|السفياني|الدجال|اليماني)/u,
     strict: false,
-    terms: [],
+    terms: ["signs", "appearance", "reappearance", "Qaim"],
+    deterministicEvidence: true,
+    onePerEvidenceRole: true,
+    evidenceQueries: [
+      {
+        role: "five-principal-signs",
+        query: "five signs before rising Qaim scream Sufyani sinking pure soul Yamani",
+        subjects: ["five signs Qaim"],
+        literalAnchors: ["five"],
+      },
+      {
+        role: "heavenly-call-details",
+        query: "cry Heaven Ramadan Gabriel name Qaim east west sleepers",
+        subjects: ["cry Heaven Qaim"],
+        literalAnchors: ["cry"],
+      },
+      {
+        role: "three-risings",
+        query: "Sufyani Yamani Khurasani same year month day banner guidance",
+        subjects: ["Sufyani Yamani Khurasani"],
+        literalAnchors: ["yamani"],
+      },
+      {
+        role: "general-preceding-events",
+        query: "before Qaim terror earthquakes seditions calamities plague disagreements",
+        subjects: ["Qaim terror earthquakes"],
+        literalAnchors: ["earthquakes"],
+      },
+      {
+        role: "appearance-day",
+        query: "Qaim appear day Ashura",
+        subjects: ["Qaim Ashura"],
+        literalAnchors: ["ashura"],
+        requiredPhraseGroups: [["qaim", "riser"], ["ashura"]],
+        requiredPhraseWindow: 900,
+      },
+    ],
     resultLimit: 10,
-    maxDirectResults: 6,
-    maxFamilyMembers: 5,
-    maxPerChapter: 3,
-    secondaryDirectRatio: 0.55,
+    maxDirectResults: 7,
+    maxFamilyMembers: 3,
+    maxPerChapter: 5,
+    minUniqueResults: 5,
+    maxUniqueResults: 10,
+    candidateLimit: 200,
+    expandedLimit: 340,
+    seedLimit: 12,
+    seedCount: 6,
+    disableFocus: true,
+    secondaryPromotionLimit: 8,
+    secondaryDirectRatio: 0.7,
+    directFloorRatio: 0.32,
+    relatedFloorRatio: 0.24,
   },
   {
     name: "conduct-deeds",
@@ -706,6 +1093,10 @@ function shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueri
     // full-record scene scorer below compares its problem and resolution. A
     // modern or unfamiliar act still receives semantic analysis.
     if (CASE_REMEDY_QUERY.test(normalized) && knownCorpusTerms >= 2) return false;
+    // A short legal question with a concrete corpus noun (for example a
+    // named food) already has enough lexical information for the local
+    // retriever. Avoid a several-second model rewrite before an exact hit.
+    if (knownCorpusTerms >= 1 && wordCount <= 5) return false;
     return knownCorpusTerms < 2
       || /\b(?:can|could|may|should|must|another|someone|work|job|sell|buy|under|without|except|all|every|circumstances?)\b/i.test(normalized);
   }
@@ -882,6 +1273,7 @@ function hasFrequentCorpusAnchor(query, manifest, intentTerms = []) {
 export function buildReligiousSearchPlan(query, manifest) {
   const original = String(query || "").trim();
   const normalized = normalize(original);
+  const exhaustive = EXHAUSTIVE_QUERY.test(normalized);
   const glossaryQueries = romanArabicGlossQueries(original);
   const signsBeforeAppearance = /\b(?:signs?|events?|conditions?)\b.{0,48}\b(?:before|preceding|prior\s+to)\b.{0,32}\b(?:appearance|reappearance|advent|rise|emergence)\b/i.test(normalized)
     || /(?:علامات|أحداث).{0,30}(?:قبل|تسبق).{0,24}(?:الظهور|الخروج)/u.test(original);
@@ -946,10 +1338,63 @@ export function buildReligiousSearchPlan(query, manifest) {
     && /\b(?:draw|drawing|paint|painting|make|making|create|creating|form|forming|produce|producing)\b/i.test(normalized)
     ? "making"
     : "display";
+  const bookSubjectTokens = facet?.name === "book-reliability"
+    ? normalized.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)
+      .filter((token) => token.length > 1
+        && !ENGLISH_STOP_WORDS.has(token)
+        && !GENERIC_QUERY_WORDS.has(token)
+        && !BOOK_ASSESSMENT_STOP_WORDS.has(token))
+      .map((token) => token === "sulaymn" ? "sulaym" : token)
+      .slice(0, 8)
+    : [];
+  const bookSubject = bookSubjectTokens.join(" ");
+  const bookIdentityTokens = bookSubjectTokens.filter((token) => !/^(?:al|book|kitab|collection)$/.test(token));
+  const bookIdentityPhrases = [
+    bookIdentityTokens.join(" "),
+    ...bookIdentityTokens.filter((token) => token.length >= 4),
+  ].filter((value, index, all) => value && all.indexOf(value) === index);
+  const bookEvidenceQueries = bookSubject
+    ? [
+        {
+          role: "transmitted-validation",
+          query: `${bookSubject} Imam read confirmed said truth mercy`,
+          subjects: [`${bookSubject} truth`],
+          literalAnchors: bookIdentityTokens,
+          requiredPhraseGroups: [
+            bookIdentityPhrases,
+            ["said the truth", "told the truth", "spoke the truth", "confirmed the truth", "صدق"],
+          ],
+          requiredPhraseWindow: 180,
+        },
+        {
+          role: "corpus-transmission",
+          query: `${bookSubject} from the book narrated report transmitted`,
+          subjects: [bookSubject],
+          literalAnchors: bookIdentityTokens,
+          requiredPhraseGroups: [
+            bookIdentityPhrases,
+            ["from the book", "taken from the book", "transmitted from the book", "من كتاب"],
+          ],
+          requiredPhraseWindow: 180,
+        },
+        {
+          role: "source-reception",
+          query: `${bookSubject} important early source depended referred doctrine`,
+          subjects: [`${bookSubject} source`],
+          literalAnchors: bookIdentityTokens,
+          requiredPhraseGroups: [
+            bookIdentityPhrases,
+            ["important book", "important source", "sources that the shia have depended", "relied upon source", "depended on this book"],
+          ],
+          requiredPhraseWindow: 240,
+        },
+      ]
+    : [];
   const facetEvidenceQueries = Array.isArray(facet?.evidenceQueries)
     ? facet.evidenceQueries.filter((entry) => entry?.query
       && (!entry.operation || entry.operation === visualOperation))
     : [];
+  const plannedFacetEvidenceQueries = [...facetEvidenceQueries, ...bookEvidenceQueries];
   const timeSearchQuery = facet?.name === "time-definition"
     ? (() => {
         const relationTerms = semanticGlossTokens.length ? semanticGlossTokens : subjectTerms;
@@ -959,14 +1404,17 @@ export function buildReligiousSearchPlan(query, manifest) {
         return terms.join(" ");
       })()
     : "";
-  const expansionParts = [timeSearchQuery || semanticGlossQuery || original, entity.text];
+  const methodGlossQuery = facet?.name === "method" && semanticGlossQuery && semanticGlossTokens.length <= 1
+    ? `${original} ${semanticGlossQuery}`
+    : semanticGlossQuery;
+  const expansionParts = [timeSearchQuery || methodGlossQuery || original, entity.text];
   const expandMethodContext = facet?.name === "method"
     && !hasFrequentCorpusAnchor(original, manifest, facet.terms);
   const methodIntentTerms = new Set((facet?.terms || [])
     .flatMap((term) => normalize(term).split(/\s+/))
     .filter(Boolean));
   const methodSubjectTerms = facet?.name === "method"
-    ? normalized.split(/\s+/).filter((term) => term.length >= 4
+    ? (semanticGlossQuery || normalized).split(/\s+/).filter((term) => term.length >= 4
       && !ENGLISH_STOP_WORDS.has(term)
       && !methodIntentTerms.has(term))
     : [];
@@ -979,8 +1427,11 @@ export function buildReligiousSearchPlan(query, manifest) {
     retrievalProfile: {
       version: 3,
       facet: facet?.name || "general",
+      exhaustive,
       caseRemedy,
+      deterministicEvidence: Boolean(facet?.deterministicEvidence),
       onePerEvidenceRole: Boolean(facet?.onePerEvidenceRole),
+      evidenceOnly: Boolean(facet?.evidenceOnly),
       needsQueryAnalysis: shouldAnalyzeQuery(original, normalized, facet, manifest, glossaryQueries),
       // Deterministic evidence lanes already use corpus-native vocabulary.
       // Do not make every word of those lanes mandatory merely because the
@@ -1009,41 +1460,57 @@ export function buildReligiousSearchPlan(query, manifest) {
       requiredCollection,
       secondaryQuery: "",
       secondaryQueries: [
-        ...facetEvidenceQueries.map((entry) => entry.query),
+        ...plannedFacetEvidenceQueries.map((entry) => entry.query),
         definitionEvidenceQuery,
         importanceEvidenceQuery,
         ...biographicalEvidenceQueries,
         reportedEvidenceQuery,
       ].filter(Boolean),
       secondaryBoostTerms: [
-        ...facetEvidenceQueries.map((entry) => entry.query),
+        ...plannedFacetEvidenceQueries.map((entry) => entry.query),
         definitionEvidenceQuery,
         importanceEvidenceQuery,
         ...biographicalEvidenceQueries,
         reportedEvidenceQuery,
       ].join(" ").split(/\s+/).filter(Boolean),
       evidenceRoles: [
-        ...facetEvidenceQueries.map((entry) => entry.role || "supporting"),
+        ...plannedFacetEvidenceQueries.map((entry) => entry.role || "supporting"),
         definitionEvidenceQuery ? "definition-detail" : "",
         importanceEvidenceQuery ? "importance-context" : "",
         ...biographicalEvidenceQueries.map((_, index) => ["death-cause", "final-illness", "burial-event"][index]),
         reportedEvidenceQuery ? "reported-practice" : "",
       ].filter(Boolean),
       evidenceQuerySubjects: [
-        ...facetEvidenceQueries.map((entry) => entry.subjects || []),
+        ...plannedFacetEvidenceQueries.map((entry) => entry.subjects || []),
         definitionEvidenceQuery ? [semanticHeadTerm] : [],
         importanceEvidenceQuery ? subjectTerms : [],
         ...biographicalEvidenceQueries.map(() => entity.searchAliases),
         reportedEvidenceQuery ? reportedEvidence.subjectGroups : [],
       ].filter((group) => group.length),
       evidenceQueryLiteralAnchors: [
-        ...facetEvidenceQueries.map((entry) => entry.literalAnchors || []),
+        ...plannedFacetEvidenceQueries.map((entry) => entry.literalAnchors || []),
         ...(definitionEvidenceQuery ? [[]] : []),
         ...(importanceEvidenceQuery ? [[]] : []),
         ...biographicalEvidenceQueries.map(() => []),
         ...(reportedEvidenceQuery ? [[]] : []),
       ],
-      resultLimit: expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
+      evidenceQueryRequiredPhraseGroups: [
+        ...plannedFacetEvidenceQueries.map((entry) => entry.requiredPhraseGroups || []),
+        ...(definitionEvidenceQuery ? [[]] : []),
+        ...(importanceEvidenceQuery ? [[]] : []),
+        ...biographicalEvidenceQueries.map(() => []),
+        ...(reportedEvidenceQuery ? [[]] : []),
+      ],
+      evidenceQueryRequiredPhraseWindows: [
+        ...plannedFacetEvidenceQueries.map((entry) => Number(entry.requiredPhraseWindow) || 0),
+        ...(definitionEvidenceQuery ? [0] : []),
+        ...(importanceEvidenceQuery ? [0] : []),
+        ...biographicalEvidenceQueries.map(() => 0),
+        ...(reportedEvidenceQuery ? [0] : []),
+      ],
+      resultLimit: exhaustive
+        ? Math.max(8, Math.min(10, facet?.resultLimit || 10))
+        : expandMethodContext ? 6 : Math.min(10, facet?.resultLimit || 10),
       seedLimit: facet?.seedLimit || 16,
       seedCount: facet?.seedCount || 8,
       candidateLimit: facet?.candidateLimit || 360,
@@ -1053,19 +1520,21 @@ export function buildReligiousSearchPlan(query, manifest) {
       familyPropagationThreshold: 0.48,
       maxFamilyMembers: facet?.maxFamilyMembers || 5,
       familyMinRelation: facet?.familyMinRelation || 0.5,
-      minUniqueResults: expandMethodContext ? 2 : (facet?.minUniqueResults || (facet?.name === "method" ? 2 : 3)),
-      maxUniqueResults: expandMethodContext ? 4 : (facet?.maxUniqueResults || 7),
+      minUniqueResults: exhaustive
+        ? Math.max(5, Number(facet?.minUniqueResults) || 0)
+        : expandMethodContext ? 2 : (facet?.minUniqueResults || (facet?.name === "method" ? 2 : 3)),
+      maxUniqueResults: exhaustive ? 10 : (expandMethodContext ? 4 : (facet?.maxUniqueResults || 7)),
       parallelReserve: facet?.parallelReserve ?? (facet?.name === "method" ? 4 : 3),
       uniqueFloorRatio: facet?.uniqueFloorRatio || (facet?.strict ? 0.34 : 0.38),
       clusterOverlapThreshold: facet?.clusterOverlapThreshold || 0.72,
       maxDirectResults: facet?.maxDirectResults || 5,
-      maxPerChapter: expandMethodContext ? 4 : (facet?.maxPerChapter || 3),
+      maxPerChapter: exhaustive ? Math.max(5, Number(facet?.maxPerChapter) || 0) : (expandMethodContext ? 4 : (facet?.maxPerChapter || 3)),
       disableFocus: Boolean(facet?.disableFocus),
       secondaryDirectRatio: facet?.secondaryDirectRatio || 0.62,
       directFloorRatio: facet?.directFloorRatio || 0.46,
       relatedFloorRatio: facet?.relatedFloorRatio || 0.36,
-      secondaryPromotionLimit: facetEvidenceQueries.length || definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQueries.length || reportedEvidenceQuery
-        ? biographicalEvidenceQueries.length ? 8 : 6
+      secondaryPromotionLimit: plannedFacetEvidenceQueries.length || definitionEvidenceQuery || importanceEvidenceQuery || biographicalEvidenceQueries.length || reportedEvidenceQuery
+        ? (facet?.secondaryPromotionLimit || (biographicalEvidenceQueries.length ? 8 : 6))
         : (facet?.secondaryPromotionLimit || 4),
     },
   };
@@ -1197,13 +1666,30 @@ function shouldRetrieveNarrations(query, manifest) {
     || (corpusTerms >= 1 && (inquiry || normalized.split(/\s+/).length <= 5));
 }
 
+export function religiousFollowUpMode(query) {
+  const current = String(query || "").trim();
+  if (EXHAUSTIVE_CHECK_FOLLOW_UP.test(current)) return "exhaustive-check";
+  if (MORE_NARRATIONS_FOLLOW_UP.test(current)
+    || (RELIGIOUS_ANAPHORIC_FOLLOW_UP.test(current) && !EXHAUSTIVE_CHECK_FOLLOW_UP.test(current))) {
+    return "more";
+  }
+  return "";
+}
+
+function isReligiousFollowUp(query) {
+  const current = String(query || "").trim();
+  return RELIGIOUS_FOLLOW_UP.test(current)
+    || RELIGIOUS_ANAPHORIC_FOLLOW_UP.test(current)
+    || Boolean(religiousFollowUpMode(current));
+}
+
 function previousUserQuestion(conversation) {
   const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "user" || typeof message.text !== "string") continue;
     const text = message.text.trim();
-    if (!text || RELIGIOUS_FOLLOW_UP.test(text)) continue;
+    if (!text || isReligiousFollowUp(text)) continue;
     return text;
   }
   return "";
@@ -1211,12 +1697,38 @@ function previousUserQuestion(conversation) {
 
 export function contextualizeReligiousQuery(query, conversation) {
   const current = String(query || "").trim();
-  if (!RELIGIOUS_FOLLOW_UP.test(current)) return current;
+  if (!isReligiousFollowUp(current)) return current;
   const previous = previousUserQuestion(conversation);
-  return previous ? `${previous}. ${current}` : current;
+  // Retrieval should keep the original subject clean. Appending phrases such
+  // as "gimme more on the matter" pollutes named entities and method facets;
+  // the current follow-up is retained separately in `synthesisQuery`.
+  return previous || current;
+}
+
+function priorRetrievedResultKeys(conversation) {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  let topicStart = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && typeof message.text === "string" && !isReligiousFollowUp(message.text)) {
+      topicStart = index;
+      break;
+    }
+  }
+  const keys = new Set();
+  for (const message of messages.slice(topicStart + 1)) {
+    if (message?.role !== "assistant" || !Array.isArray(message.results)) continue;
+    for (const result of message.results) {
+      for (const key of [result?.link, result?.id, result?.clusterId]) {
+        if (key !== undefined && key !== null && String(key)) keys.add(String(key));
+      }
+    }
+  }
+  return [...keys];
 }
 
 export function resolveLocalConversation(query, conversation, globalMemory, manifest) {
+  const followUpMode = religiousFollowUpMode(query);
   const switchedLanguage = requestedLanguage(query);
   const detectedLanguage = detectConversationLanguage(query);
   const rememberedLanguage = conversation?.memory?.language || globalMemory?.profile?.language;
@@ -1226,7 +1738,12 @@ export function resolveLocalConversation(query, conversation, globalMemory, mani
   const memoryUpdate = extractMemory(query)
     || (switchedLanguage ? { key: "language", value: switchedLanguage } : null);
   const contextualQuery = contextualizeReligiousQuery(query, conversation);
-  const bookInfo = resolveBookAuthorship(contextualQuery, manifest);
+  // Authorship is bibliographic; reliability/reception is evidentiary. Route
+  // the latter through the corpus so the user sees the reports on which an
+  // assessment is based instead of a bare catalog opinion.
+  const bookInfo = BOOK_RELIABILITY_QUERY.test(normalize(contextualQuery))
+    ? null
+    : resolveBookAuthorship(contextualQuery, manifest);
   if (bookInfo) {
     return {
       ...bookInfo,
@@ -1235,15 +1752,36 @@ export function resolveLocalConversation(query, conversation, globalMemory, mani
     };
   }
   const religiousSearch = buildReligiousSearchPlan(contextualQuery, manifest);
+  const retrievalProfile = followUpMode
+    ? {
+        ...religiousSearch.retrievalProfile,
+        exhaustive: true,
+        followUpMode,
+        excludeResultKeys: priorRetrievedResultKeys(conversation),
+        resultLimit: followUpMode === "exhaustive-check"
+          ? Math.max(24, Number(religiousSearch.retrievalProfile.resultLimit) || 0)
+          : Math.max(10, Number(religiousSearch.retrievalProfile.resultLimit) || 0),
+        maxUniqueResults: Math.max(24, Number(religiousSearch.retrievalProfile.maxUniqueResults) || 0),
+        maxPerChapter: Math.max(10, Number(religiousSearch.retrievalProfile.maxPerChapter) || 0),
+        parallelReserve: 1,
+        // Once the strongest page has been shown, do not fill a "more"
+        // request with the long low-score tail merely to reach a quota.
+        directFloorRatio: Math.max(0.5, Number(religiousSearch.retrievalProfile.directFloorRatio) || 0),
+        relatedFloorRatio: Math.max(0.45, Number(religiousSearch.retrievalProfile.relatedFloorRatio) || 0),
+        uniqueFloorRatio: Math.max(0.45, Number(religiousSearch.retrievalProfile.uniqueFloorRatio) || 0),
+      }
+    : religiousSearch.retrievalProfile;
   if (religiousSearch.entityDetected
-    || religiousSearch.retrievalProfile.facet !== "general"
+    || retrievalProfile.facet !== "general"
     || shouldRetrieveNarrations(contextualQuery, manifest)) {
     return {
       intent: "religious-search",
       language,
       searchQuery: religiousSearch.searchQuery,
-      synthesisQuery: contextualQuery,
-      retrievalProfile: religiousSearch.retrievalProfile,
+      synthesisQuery: isReligiousFollowUp(query) && contextualQuery !== String(query || "").trim()
+        ? `${contextualQuery}. ${String(query || "").trim()}`
+        : contextualQuery,
+      retrievalProfile,
       memoryUpdate,
     };
   }

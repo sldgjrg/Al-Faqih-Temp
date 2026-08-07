@@ -470,6 +470,268 @@ function quotedEvidence(result, results, evidenceTerms = []) {
   ];
 }
 
+export function bookReliabilityEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const validation = available.find((result) => result?.evidenceRole === "transmitted-validation"
+      && /(?:said|spoke|told).*truth|confirm(?:ed|s)?.*truth|truth.*(?:read|book|transmission)|mercy.*(?:transmitter|author|compiler)/i.test(result?.text || ""))
+    || strongestEvidence(available, [/said the truth/i, /may Allah have mercy on him/i]);
+  const transmission = available.find((result) => result?.evidenceRole === "corpus-transmission"
+      && /from (?:the )?book|taken from (?:the )?book|من كتاب|كتاب سليم/iu.test(result?.text || ""))
+    || strongestEvidence(available, [/from the book of/i, /from the book entitled/i]);
+  const reception = available.find((result) => result?.evidenceRole === "source-reception"
+      && /important (?:books?|sources?)|sources?.{0,100}(?:depended|relied|referred)/i.test(result?.text || ""))
+    || strongestEvidence(available, [/important books/i, /sources.*depended/i]);
+  if (!validation && !transmission && !reception) return "";
+  const sections = [
+    "## Direct answer", "",
+    "Based on the displayed corpus evidence, the named work is presented as an important, relied-upon Shia source. An Imam confirms the truth of one particular transmission read from it and prays for its transmitter. This is strong evidence for the work's reception, but it is not an Imam's blanket grading of every report or every surviving recension as authentic.",
+  ];
+  if (validation) {
+    sections.push("", "## Confirmation of a transmitted report", "", ...quotedEvidence(validation, available, [
+      "book of Sulaym", "Sulaym has said the truth", "mercy on him", "read it to Ali ibn al-Husayn",
+    ]));
+  }
+  if (transmission && transmission !== validation) {
+    sections.push("", "## Express transmission from the book", "", ...quotedEvidence(transmission, available, [
+      "from the book of Sulaym", "Sulaym ibn Qays", "Aban ibn Abi Ayyash",
+    ]));
+  }
+  if (reception && ![validation, transmission].includes(reception)) {
+    sections.push("", "## Later source-reception note", "", ...quotedEvidence(reception, available, [
+      "important books", "sources", "depended", "referred",
+    ]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "The Imam's quoted confirmation concerns the particular transmission read before him; it is not an explicit blanket chain-grade for every report or every surviving recension of the book. The source-reception passage is compiler commentary, not a separate saying of an Imam. Broader praise formulas should only be displayed if their actual reports are present after Kitab Sulaym or another source containing them is added to the corpus.",
+  );
+  return sections.join("\n");
+}
+
+export function followUpRetrievalSynthesis(mode, resultCount = 0, familyCount = 0) {
+  const results = Math.max(0, Number(resultCount) || 0);
+  const families = Math.max(0, Number(familyCount) || results);
+  const familyLabel = `${families} additional distinct report ${families === 1 ? "family" : "families"}`;
+  if (mode === "exhaustive-check") {
+    return results
+      ? `No. Those were not all the reports available to me in the current corpus; I found ${familyLabel} below.`
+      : "Yes. Those were all the distinct report families I could find in the current corpus for this topic.";
+  }
+  if (mode === "more") {
+    return results
+      ? `I found ${familyLabel} not shown in the earlier result set.`
+      : "I could not find any additional distinct report families in the current corpus for this topic; the earlier set was all I could retrieve.";
+  }
+  return "";
+}
+
+export function hajjCompanionshipEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const safety = available.find((result) => result?.evidenceRole === "without-guardian-safety")
+    || strongestEvidence(available, [/without.*guardians?/i, /if she is safe/i]);
+  const company = available.find((result) => result?.evidenceRole === "trustworthy-company")
+    || strongestEvidence(available, [/trustworthy people/i]);
+  if (!safety && !company) return "";
+  const sections = [
+    "## Direct answer", "",
+    "The retrieved reports address the companionship question itself, rather than a type or procedure of Hajj. One says a woman may go without one of her guardians if she is safe; another states that going with trustworthy people is not harmful.",
+  ];
+  if (safety) sections.push("", ...quotedEvidence(safety, available, ["without", "guardians", "safe"]));
+  if (company && company !== safety) {
+    sections.push("", "## Trustworthy company", "", ...quotedEvidence(company, available, ["trustworthy people", "not harmful"]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "This reproduces the conditions stated in the displayed reports. It does not silently replace safety or trustworthy company with an unrelated modern travel condition.",
+  );
+  return sections.join("\n");
+}
+
+export function ritualNullifierEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const prayer = available.find((result) => result?.evidenceRole === "prayer-nullifier")
+    || strongestEvidence(available, [/prayer is broken by wind/i, /flatulence/i]);
+  const ablution = available.find((result) => result?.evidenceRole === "ablution-nullifier")
+    || strongestEvidence(available, [/invalidates the ablution.*farting/i, /farting.*sleeping/i]);
+  const sensory = available.find((result) => {
+    const text = String(result?.text || "");
+    const hasPairedCriterion = /hear\w*\s+(?:a\s+)?sound[\s\S]{0,180}(?:smell|odou?r)|(?:smell|odou?r)[\s\S]{0,180}hear\w*\s+(?:a\s+)?sound/i.test(text);
+    const hasRitualContext = /prayer|salah|wud[uh]?|ablution|wind|flatulence|fart/i.test(text);
+    return hasPairedCriterion && hasRitualContext;
+  });
+  const certainty = available.find((result) => result?.evidenceRole === "certainty-not-doubt")
+    || strongestEvidence(available, [/does not destroy certainty with doubt/i, /certain.*then doubts/i]);
+  if (!prayer && !ablution && !sensory && !certainty) return "";
+  const sections = [
+    "## Direct answer", "",
+    "Here 'wind' means emitted gas, not weather. Actual emission invalidates wudu and therefore the prayer. Mere uncertainty is different: the retrieved certainty reports say not to overturn a known state with doubt.",
+  ];
+  if (prayer) sections.push("", ...quotedEvidence(prayer, available, ["wind", "flatulence", "breaks the wudu"]));
+  if (ablution && ablution !== prayer) {
+    sections.push("", "## Ablution context", "", ...quotedEvidence(ablution, available, ["invalidates the ablution", "farting", "sleeping"]));
+  }
+  if (sensory && ![prayer, ablution].includes(sensory)) {
+    sections.push("", "## Sensory criterion for doubt", "", ...quotedEvidence(sensory, available, ["hear", "sound", "smell", "odor", "odour"]));
+  } else if (certainty && ![prayer, ablution].includes(certainty)) {
+    sections.push("", "## Certainty is not displaced by doubt", "", ...quotedEvidence(certainty, available, ["certainty", "doubt", "continue"]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    sensory
+      ? "The answer distinguishes an actual nullifier from suspicion and preserves the sensory criterion stated in the displayed report."
+      : "The exact 'hear a sound or detect an odor' wording is not present in the displayed current-corpus results. The displayed certainty report supplies the general doubt principle, but its immediate example must not be falsely quoted as if it explicitly discussed wind.",
+  );
+  return sections.join("\n");
+}
+
+export function ritualTestimonyEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const scope = available.find((result) => result?.evidenceRole === "wording-scope")
+    || strongestEvidence(available, [/best you know/i, /not.*definite/i]);
+  const minimum = available.find((result) => result?.evidenceRole === "minimum-wording")
+    || strongestEvidence(available, [/minimum.*sufficient.*Tashahhud/i, /two testimonies/i]);
+  const boundary = available.find((result) => result?.evidenceRole === "prayer-boundary")
+    || strongestEvidence(available, [/whatever you say of Allah and the Holy prophet/i]);
+  const prophetic = available.find((result) => result?.evidenceRole === "prophetic-tashahhud")
+    || strongestEvidence(available, [/In the name of Allah, with.*Allah/i, /beautiful names belong to Allah/i]);
+  const covenant = available.find((result) => result?.evidenceRole === "primordial-testimony")
+    || strongestEvidence(available, [/covenant.*Muhammad.*Ali/i, /Ali.*commander of the believers/i]);
+  const proclamation = available.find((result) => result?.evidenceRole === "creation-proclamation")
+    || strongestEvidence(available, [/announcer.*Muhammad.*Ali/i]);
+  const inscription = available.find((result) => result?.evidenceRole === "inscribed-testimony")
+    || strongestEvidence(available, [/Muhammad.*Messenger of Allah.*Ali.*friend of Allah/i, /Aliyyun wali Allah/i]);
+  if (!scope && !minimum && !boundary && !prophetic && !covenant && !proclamation && !inscription) return "";
+  const sections = [
+    "## Direct answer", "",
+    "The tashahhud-specific reports state flexibility in its praise and testimony, identify two testimonies as the minimum sufficient wording, and preserve a longer transmitted form beginning 'In the name of Allah, with Allah' followed by salawat upon Muhammad and his family. Separate covenant, proclamation, and inscription reports place tawhid, Muhammad's messengership, and Ali's wilayah or command together.",
+  ];
+  if (scope) sections.push("", ...quotedEvidence(scope, available, ["what should I say", "best you know", "definite"]));
+  if (minimum && minimum !== scope) {
+    sections.push("", "## Minimum stated wording", "", ...quotedEvidence(minimum, available, ["minimum", "sufficient", "two testimonies"]));
+  }
+  if (boundary && boundary !== scope && boundary !== minimum) {
+    sections.push("", "## Prayer boundary", "", ...quotedEvidence(boundary, available, ["Allah", "Holy prophet", "of Salah", "ended Salah"]));
+  }
+  if (prophetic && ![scope, minimum, boundary].includes(prophetic)) {
+    sections.push("", "## Transmitted tashahhud wording", "", ...quotedEvidence(prophetic, available, [
+      "In the name of Allah", "with Allah", "beautiful names", "Muhammad", "family of Muhammad",
+    ]));
+  }
+  const pairedDeclarations = [covenant, proclamation, inscription]
+    .filter((result, index, values) => result && values.indexOf(result) === index && ![scope, minimum, boundary, prophetic].includes(result));
+  for (const result of pairedDeclarations) {
+    sections.push("", "## Tawhid, risalah, and Ali's authority together", "", ...quotedEvidence(result, available, [
+      "no one deserves worship", "Muhammad", "messenger", "Ali", "commander", "friend of Allah", "covenant", "announcer",
+    ]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "The paired-declaration reports establish that the three declarations occur together in transmitted settings outside this ritual passage. Unless a displayed report explicitly instructs their insertion into ritual tashahhud, they should not be misquoted as doing so. The tashahhud reports supply its transmitted wording, scope, minimum, and prayer boundary without inventing a categorical prohibition or permission absent from their words.",
+  );
+  return sections.join("\n");
+}
+
+export function quranTransmissionEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const extent = available.find((result) => result?.evidenceRole === "reported-extent")
+    || strongestEvidence(available, [/seventeen thousand verses/i]);
+  const collection = available.find((result) => result?.evidenceRole === "collection-as-revealed")
+    || strongestEvidence(available, [/collected the whole.*Quran.*as it was revealed/i]);
+  const mushafDistinction = available.find((result) => result?.evidenceRole === "mushaf-not-quran")
+    || strongestEvidence(available, [/Mushaf of Fatima.*not even a single letter/i, /not.*anything from the Holy Quran/i]);
+  const mushafContent = available.find((result) => result?.evidenceRole === "mushaf-content")
+    || strongestEvidence(available, [/nothing in it.*lawful and unlawful/i, /knowledge of things.*future/i]);
+  if (!extent && !collection && !mushafDistinction && !mushafContent) return "";
+  const sections = [
+    "## Direct answer", "",
+    "The retrieved reports do not all make one identical claim. One reports seventeen thousand verses; another speaks of collecting and preserving the whole Qur'an “as it was revealed.” Separately, the Mushaf Fāṭimah reports explicitly say that it contains no letter or nothing from the Qur'an. Mushaf Fāṭimah therefore cannot be presented, from these reports, as Qur'anic material that was removed.",
+  ];
+  if (extent) sections.push("", "## Reported extent", "", ...quotedEvidence(extent, available, ["seventeen thousand verses"]));
+  if (collection && collection !== extent) {
+    sections.push("", "## Collection as revealed", "", ...quotedEvidence(collection, available, ["whole of the Quran", "as it was revealed", "Ali", "Imams"]));
+  }
+  if (mushafDistinction && mushafDistinction !== extent && mushafDistinction !== collection) {
+    sections.push("", "## Mushaf Fāṭimah is distinguished from the Qur'an", "", ...quotedEvidence(mushafDistinction, available, ["Mushaf of Fatima", "single letter", "Quran"]));
+  }
+  if (mushafContent && ![extent, collection, mushafDistinction].includes(mushafContent)) {
+    sections.push("", "## Its stated content", "", ...quotedEvidence(mushafContent, available, ["lawful and unlawful", "future", "angel", "write"]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "The displayed reports are evidence to be analyzed, not a chain-graded conclusion about the history of the received text. They also do not, by themselves, formulate the precise thesis “nothing was added and only material was removed.” Any such conclusion must distinguish wording, interpretation, collection, arrangement and textual extent rather than treating them as synonyms.",
+  );
+  return sections.join("\n");
+}
+
+export function juristAuthorityEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  const adjudication = available.find((result) => result?.evidenceRole === "dispute-adjudication")
+    || strongestEvidence(available, [/two people with a dispute/i, /made him.*ruler/i]);
+  const judge = available.find((result) => result?.evidenceRole === "appointed-judge")
+    || strongestEvidence(available, [/made him to judge/i, /seek adjudication/i]);
+  const referral = available.find((result) => result?.evidenceRole === "occultation-referral")
+    || strongestEvidence(available, [/problems.*future.*refer.*narrators/i, /my proofs? on you/i]);
+  const divineScope = available.find((result) => result?.evidenceRole === "divine-authority-scope")
+    || strongestEvidence(available, [/earth without a Leader with Your Authority/i, /person with Your Authority/i]);
+  const mixedAuthority = available.find((result) => result?.evidenceRole === "mixed-truth-authority-warning")
+    || strongestEvidence(available, [/truth.*falsehood.*mixed/i, /yield to other people as high authority/i]);
+  if (!adjudication && !judge && !referral && !divineScope && !mixedAuthority) return "";
+  const sections = [
+    "## Direct answer", "",
+    "The relevant reports must be separated by scope. The ʿUmar ibn Ḥanẓalah and Abū Khadījah reports expressly concern disputes and adjudication by someone versed in the Imams' reports and judgments. The occultation letter tells believers to refer future problems to narrators of the Imams' traditions. Other reports reserve divinely designated authority to the continuing Leader or Imam.",
+  ];
+  if (adjudication) sections.push("", "## Dispute adjudication", "", ...quotedEvidence(adjudication, available, ["dispute", "narrated our Hadith", "lawful and unlawful", "judge", "ruler"]));
+  if (judge && judge !== adjudication) {
+    sections.push("", "## Appointed judge", "", ...quotedEvidence(judge, available, ["people of injustice", "our judgment", "judge", "adjudication"]));
+  }
+  if (referral && ![adjudication, judge].includes(referral)) {
+    sections.push("", "## Referral during occultation", "", ...quotedEvidence(referral, available, ["problems", "future", "narrators of our traditions", "proofs"]));
+  }
+  if (divineScope && ![adjudication, judge, referral].includes(divineScope)) {
+    sections.push("", "## Divinely designated authority", "", ...quotedEvidence(divineScope, available, ["earth", "Leader", "Authority", "creatures", "hidden"]));
+  }
+  if (mixedAuthority && ![adjudication, judge, referral, divineScope].includes(mixedAuthority)) {
+    sections.push("", "## Warning about human authority and mixed truth", "", ...quotedEvidence(mixedAuthority, available, [
+      "mischief", "desires", "invented rules", "high authority", "truth", "falsehood", "mixed",
+    ]));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "The Imam Ali sermon supplies a conceptual warning about invented rules, mixed truth and falsehood, and people taking other people as high authority; it does not itself name the later constitutional theory. None of the displayed passages uses the modern formula 'absolute political guardianship of the jurist.' Judicial appointment, referral for religious problems and universal political sovereignty are not interchangeable propositions.",
+  );
+  return sections.join("\n");
+}
+
+export function signsEvidenceSynthesis(results) {
+  const available = Array.isArray(results) ? results : [];
+  if (!available.length) return "";
+  const principal = available.find((result) => result?.evidenceRole === "five-principal-signs")
+    || strongestEvidence(available, [/five signs/i, /pure soul.*Yamani/i]);
+  const call = available.find((result) => result?.evidenceRole === "heavenly-call-details");
+  const risings = available.find((result) => result?.evidenceRole === "three-risings");
+  const general = available.find((result) => result?.evidenceRole === "general-preceding-events");
+  const day = available.find((result) => result?.evidenceRole === "appearance-day");
+  const sections = [
+    "## Direct answer", "",
+    "The displayed reports include the five principal signs and separate details about the heavenly call, the related risings, broader preceding upheavals, and the reported day of appearance. Parallel transmissions of the same five-sign report are not counted as additional signs.",
+  ];
+  for (const [heading, result, terms] of [
+    ["Five principal signs", principal, ["five signs", "scream", "Sufyani", "sinking", "pure soul", "Yamani"]],
+    ["Heavenly call", call, ["cry", "Heaven", "Ramadan", "Gabriel", "Qaim"]],
+    ["Related risings", risings, ["Sufyani", "Yamani", "Khurasani", "same year", "guidance"]],
+    ["Broader preceding events", general, ["terror", "earthquakes", "seditions", "calamities", "plague"]],
+    ["Reported appearance day", day, ["Qaim", "Ashura"]],
+  ]) {
+    if (!result) continue;
+    sections.push("", `## ${heading}`, "", ...quotedEvidence(result, available, terms));
+  }
+  sections.push(
+    "", "## Limits of the evidence", "",
+    "“All signs” cannot honestly mean every report ever transmitted or every sign in books absent from the corpus. This answer groups the distinct answer-bearing report families retrieved from the current corpus and does not add motivational advice or an invented exhaustive claim.",
+  );
+  return sections.join("\n");
+}
+
 export function lineageMarriageEvidenceSynthesis(results) {
   const available = Array.isArray(results) ? results : [];
   const compatibility = available.find((result) => result?.evidenceRole === "faith-compatibility")
